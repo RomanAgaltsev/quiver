@@ -47,6 +47,36 @@ func TestParseRejectsUnknownField(t *testing.T) {
 	require.Contains(t, err.Error(), "assertion")
 }
 
+// goccy's []byte unmarshal hook hands back re-serialized YAML *source*, so a
+// duration's spelling and its position in the file change what the hook sees
+// ("5s\n" mid-document, "\"5s\"" when quoted). Duration uses the
+// InterfaceUnmarshaler form to avoid that; these pin every shape.
+func TestParseTimeoutForms(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want time.Duration
+	}{
+		{"plain, mid-document", "timeout: 5s\nname: x\n", 5 * time.Second},
+		{"double-quoted", "timeout: \"1500ms\"\nname: x\n", 1500 * time.Millisecond},
+		{"single-quoted", "timeout: '2m'\nname: x\n", 2 * time.Minute},
+		{"plain, last line, no trailing newline", "name: x\ntimeout: 90s", 90 * time.Second},
+		{"absent", "name: x\n", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, err := Parse([]byte(tc.in))
+			require.NoError(t, err)
+			require.Equal(t, tc.want, r.Timeout.Duration())
+		})
+	}
+}
+
+func TestParseRejectsBadTimeout(t *testing.T) {
+	_, err := Parse([]byte("name: x\ntimeout: 5 seconds\n"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "timeout")
+}
+
 func TestValidateRejectsMissingBlock(t *testing.T) {
 	r := &Request{Name: "x", Protocol: ProtocolGRPC} // no grpc block
 	require.Error(t, r.Validate())
@@ -123,33 +153,4 @@ func TestValidateRejectsBodyAndBodyFile(t *testing.T) {
 		HTTP: &HTTPSpec{Method: "POST", URL: "http://x", Body: "{}", BodyFile: "b.json"},
 	}
 	require.Error(t, r.Validate())
-}
-
-// The []byte form of goccy's unmarshal hook hands back re-serialized YAML source,
-// so a duration's spelling and its position in the file used to change what the
-// hook saw ("5s\n" mid-document, "\"5s\"" when quoted). Pin all three shapes.
-func TestParseTimeoutForms(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		in   string
-		want time.Duration
-	}{
-		{"plain, mid-document", "timeout: 5s\nname: x\n", 5 * time.Second},
-		{"double-quoted", "timeout: \"1500ms\"\nname: x\n", 1500 * time.Millisecond},
-		{"single-quoted", "timeout: '2m'\nname: x\n", 2 * time.Minute},
-		{"plain, last line, no trailing newline", "name: x\ntimeout: 90s", 90 * time.Second},
-		{"absent", "name: x\n", 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r, err := Parse([]byte(tc.in))
-			require.NoError(t, err)
-			require.Equal(t, tc.want, r.Timeout.Duration())
-		})
-	}
-}
-
-func TestParseRejectsBadTimeout(t *testing.T) {
-	_, err := Parse([]byte("name: x\ntimeout: 5 seconds\n"))
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "timeout")
 }
