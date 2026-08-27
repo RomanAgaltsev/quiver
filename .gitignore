@@ -1,0 +1,6 @@
+/qv
+/qv.exe
+/dist/
+.qv/
+*.out
+coverage.*

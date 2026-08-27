@@ -1,0 +1,23 @@
+version: '3'
+tasks:
+  build:
+    cmds: ['go build -o qv ./cmd/qv']
+  test:
+    cmds: ['go test -race -shuffle=on ./...']
+  cover:
+    cmds: ['go test -race -coverprofile=coverage.out ./...', 'go tool cover -func=coverage.out']
+  lint:
+    cmds: ['golangci-lint run']
+  fmt:
+    cmds: ['golangci-lint fmt']
+  proto:
+    desc: Regenerate the gRPC test fixtures (needs protoc + protoc-gen-go + protoc-gen-go-grpc).
+    cmds:
+      - >-
+        protoc --go_out=. --go_opt=module=github.com/RomanAgaltsev/quiver
+        --go-grpc_out=. --go-grpc_opt=module=github.com/RomanAgaltsev/quiver
+        internal/transport/grpcx/testdata/echo.proto
+  vuln:
+    cmds: ['go run golang.org/x/vuln/cmd/govulncheck@latest ./...']
+  tidy:
+    cmds: ['go mod tidy']
