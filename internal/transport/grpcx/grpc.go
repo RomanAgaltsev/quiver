@@ -6,24 +6,25 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/RomanAgaltsev/quiver/internal/core"
-	"github.com/RomanAgaltsev/quiver/internal/request"
-	"github.com/jhump/protoreflect/desc"
-	"github.com/jhump/protoreflect/dynamic/grpcdynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
+
+	"github.com/RomanAgaltsev/quiver/internal/core"
+	"github.com/RomanAgaltsev/quiver/internal/request"
 )
 
 // DefaultTimeout applies when neither the request nor an option sets one.
@@ -35,7 +36,7 @@ type dialerFunc func(context.Context, string) (net.Conn, error)
 type conn struct {
 	cc      *grpc.ClientConn
 	mu      sync.Mutex
-	methods map[string]*desc.MethodDescriptor // keyed by "pkg.Service/Method"
+	methods map[string]protoreflect.MethodDescriptor // keyed by "pkg.Service/Method"
 }
 
 type executor struct {
@@ -127,18 +128,41 @@ func (e *executor) dial(target string, plaintext bool) (*conn, error) {
 	if e.dialer != nil {
 		opts = append(opts, grpc.WithContextDialer(e.dialer))
 	}
-	cc, err := grpc.NewClient(target, opts...)
+	cc, err := grpc.NewClient(normalizeTarget(target), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("grpcx: dial %s: %w", target, err)
 	}
-	c := &conn{cc: cc, methods: map[string]*desc.MethodDescriptor{}}
+	c := &conn{cc: cc, methods: map[string]protoreflect.MethodDescriptor{}}
 	e.conns[key] = c
 	return c, nil
 }
 
+// normalizeTarget prefixes a scheme-less target with "passthrough:///".
+//
+// grpc.NewClient (unlike the deprecated grpc.Dial) defaults to the *dns*
+// resolver, so a bare "host:port" becomes "dns:///host:port". That silently
+// breaks two things: a custom dialer is never consulted, because the resolver
+// must produce an address before anything dials, and a target DNS cannot answer
+// fails after a ~20s resolver timeout with "produced zero addresses" instead of
+// a prompt connection error. quiver dials the address the user wrote — the same
+// thing grpcurl does — so passthrough is the correct default.
+//
+// A target that already names a registered resolver scheme (dns://, unix://,
+// passthrough://, ...) is left exactly as written. The registered-scheme check
+// mirrors grpc-go's own parsing: "localhost:50051" parses as a URL with scheme
+// "localhost", which is not a resolver, so it must still be prefixed.
+func normalizeTarget(target string) string {
+	if u, err := url.Parse(target); err == nil && u.Scheme != "" {
+		if resolver.Get(strings.ToLower(u.Scheme)) != nil {
+			return target
+		}
+	}
+	return "passthrough:///" + target
+}
+
 // resolveMethod returns the method descriptor, using the per-connection cache and
 // falling back to server reflection.
-func (c *conn) resolveMethod(ctx context.Context, full, svc, method string) (*desc.MethodDescriptor, error) {
+func (c *conn) resolveMethod(ctx context.Context, full, svc, method string) (protoreflect.MethodDescriptor, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if md, ok := c.methods[full]; ok {
@@ -156,11 +180,15 @@ func (c *conn) resolveMethod(ctx context.Context, full, svc, method string) (*de
 		return nil, fmt.Errorf("grpcx: resolve service %q via reflection: %w "+
 			"(if the server has reflection disabled, set grpc.proto_files)", svc, err)
 	}
-	md := sd.FindMethodByName(method)
+	// UnwrapService is the single boundary where the deprecated v1
+	// protoreflect/desc types enter and immediately leave. Everything the
+	// executor caches and passes around is v2, so swapping the reflection
+	// client for jhump/protoreflect/v2 later touches only these lines.
+	md := sd.UnwrapService().Methods().ByName(protoreflect.Name(method))
 	if md == nil {
 		return nil, fmt.Errorf("grpcx: method %q not found in service %q", method, svc)
 	}
-	if md.IsClientStreaming() || md.IsServerStreaming() {
+	if md.IsStreamingClient() || md.IsStreamingServer() {
 		return nil, fmt.Errorf("grpcx: %s is a streaming RPC; quiver supports unary calls only", full)
 	}
 	c.methods[full] = md
@@ -199,7 +227,7 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 
 	// Build the request message on dynamicpb (not protoreflect v1's legacy
 	// `dynamic` package) so protojson governs both directions — see Q20 / Q31.
-	reqMsg := dynamicpb.NewMessage(md.GetInputType().UnwrapMessage())
+	reqMsg := dynamicpb.NewMessage(md.Input())
 	if spec.Message != "" {
 		if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).
 			Unmarshal([]byte(spec.Message), reqMsg); err != nil {
@@ -219,9 +247,16 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 	// and `from: header` captures/assertions silently return nothing for gRPC.
 	var hdr, tlr metadata.MD
 
-	stub := grpcdynamic.NewStub(c.cc)
+	// Invoke on the ClientConn directly with a dynamicpb reply rather than
+	// through grpcdynamic.Stub. The stub builds its reply with jhump's own
+	// message factory, which returns a *dynamic.Message — a protobuf *v1*
+	// message with no ProtoReflect method. It can therefore never satisfy the
+	// protojson path below, so every successful unary call failed with
+	// "unexpected reply type" and the Q20 EmitUnpopulated handling was dead.
+	respMsg := dynamicpb.NewMessage(md.Output())
+	fullMethod := "/" + string(md.FullName().Parent()) + "/" + string(md.Name())
 	start := time.Now()
-	out, callErr := stub.InvokeRpc(ctx, md, reqMsg, grpc.Header(&hdr), grpc.Trailer(&tlr))
+	callErr := c.cc.Invoke(ctx, fullMethod, reqMsg, respMsg, grpc.Header(&hdr), grpc.Trailer(&tlr))
 	dur := time.Since(start)
 
 	resp := &core.Response{Protocol: rr.Protocol, Duration: dur, Headers: map[string][]string{}}
@@ -253,16 +288,12 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 	resp.StatusText = codes.OK.String()
 	resp.OK = true
 
-	msg, ok := out.(protoreflect.ProtoMessage)
-	if !ok {
-		return nil, fmt.Errorf("grpcx: unexpected reply type %T", out)
-	}
 	// EmitUnpopulated keeps zero-valued fields in the JSON. Without it a
 	// reply of {count: 0, name: ""} marshals to {} and a capture on `count`
 	// fails with "path not found" for no discoverable reason. This is exactly
 	// what grpcurl's -emit-defaults exists for.
 	jsonBytes, err := (protojson.MarshalOptions{EmitUnpopulated: true, Multiline: false}).
-		Marshal(msg)
+		Marshal(respMsg)
 	if err != nil {
 		return nil, fmt.Errorf("grpcx: marshal reply: %w", err)
 	}
@@ -272,7 +303,7 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 
 // methodDescriptor resolves via local .proto files when provided, otherwise via
 // server reflection. The proto-file path is implemented in Task 10.
-func (e *executor) methodDescriptor(ctx context.Context, c *conn, spec *request.GRPCSpec, svc, method string) (*desc.MethodDescriptor, error) {
+func (e *executor) methodDescriptor(ctx context.Context, c *conn, spec *request.GRPCSpec, svc, method string) (protoreflect.MethodDescriptor, error) {
 	if len(spec.ProtoFiles) > 0 {
 		return resolveFromProtoFiles(spec.ProtoFiles, spec.Method, svc, method) // Task 10
 	}

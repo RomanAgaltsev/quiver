@@ -133,4 +133,25 @@ func TestSplitMethod(t *testing.T) {
 	require.Error(t, err)
 }
 
+// grpc.NewClient defaults to the dns resolver, so a scheme-less target must be
+// pinned to passthrough or the custom dialer is never consulted and the call
+// dies with "produced zero addresses" after a ~20s resolver timeout. A target
+// that already names a registered resolver scheme must survive untouched.
+func TestNormalizeTarget(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"host:port", "localhost:50051", "passthrough:///localhost:50051"},
+		{"ipv4:port", "127.0.0.1:50051", "passthrough:///127.0.0.1:50051"},
+		{"bare host", "api.example.com", "passthrough:///api.example.com"},
+		{"bufconn stand-in", "bufnet", "passthrough:///bufnet"},
+		{"explicit dns", "dns:///api.example.com:443", "dns:///api.example.com:443"},
+		{"explicit passthrough", "passthrough:///bufnet", "passthrough:///bufnet"},
+		{"unix socket", "unix:///var/run/svc.sock", "unix:///var/run/svc.sock"},
+		{"uppercase scheme", "DNS:///api.example.com", "DNS:///api.example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, normalizeTarget(tc.in))
+		})
+	}
+}
+
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) } // Q25
