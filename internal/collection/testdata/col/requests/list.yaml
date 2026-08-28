@@ -1,0 +1,6 @@
+name: list
+protocol: http
+order: 20
+http:
+  method: GET
+  url: "{{base}}/users"

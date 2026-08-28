@@ -1,0 +1,7 @@
+defaults:
+  base: "http://localhost"
+fail_on_error: false
+auth:
+  main:
+    type: bearer
+    token: "{{tok}}"

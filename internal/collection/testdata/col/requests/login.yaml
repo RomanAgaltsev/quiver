@@ -1,0 +1,6 @@
+name: login
+protocol: http
+order: 10
+http:
+  method: POST
+  url: "{{base}}/login"
