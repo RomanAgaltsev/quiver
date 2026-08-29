@@ -72,7 +72,7 @@ func TestHTTPExecuteSetsOKFalseOnError(t *testing.T) {
 
 // A per-request timeout must actually cancel the request.
 func TestHTTPExecuteHonoursPerRequestTimeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		time.Sleep(300 * time.Millisecond)
 	}))
 	defer srv.Close()
@@ -86,7 +86,7 @@ func TestHTTPExecuteHonoursPerRequestTimeout(t *testing.T) {
 
 // Query values are merged into any query string already on the URL.
 func TestHTTPExecuteMergesQuery(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "keep", r.URL.Query().Get("existing"))
 		require.Equal(t, "https://cb/x", r.URL.Query().Get("next"))
 	}))

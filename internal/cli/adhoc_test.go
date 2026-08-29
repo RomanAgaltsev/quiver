@@ -29,7 +29,7 @@ func TestHTTPAdHoc(t *testing.T) {
 // Header and query flags need *different* separators. Splitting on ":" first
 // turned `-q next=https://x` into {"next=https": "//x"} — reproduced during review.
 func TestAdHocHeaderAndQueryParsing(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer a:b", r.Header.Get("Authorization"))
 		require.Equal(t, "https://cb/x", r.URL.Query().Get("next"))
 		require.Equal(t, "a:b", r.URL.Query().Get("filter"))
@@ -65,7 +65,7 @@ func TestAdHocMalformedHeaderIsConfigError(t *testing.T) {
 // "{{base}}/users"` sent the literal "{{base}}" despite --env being a visible
 // persistent flag on the command.
 func TestAdHocResolvesEnvironmentTemplates(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/users", r.URL.Path)
 	}))
 	defer srv.Close()
@@ -86,7 +86,7 @@ func TestAdHocResolvesEnvironmentTemplates(t *testing.T) {
 
 // Ad-hoc mode can authenticate.
 func TestAdHocBearerFlag(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
 	}))
 	defer srv.Close()

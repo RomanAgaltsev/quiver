@@ -29,6 +29,8 @@ type Record struct {
 	Vars     map[string]string `json:"vars,omitempty"` // --var overrides (redacted)
 }
 
+// Store is the local history log: an append-only JSONL file under the
+// collection root plus the redactor applied to every record.
 type Store struct {
 	path string
 	red  *secret.Redactor
@@ -79,6 +81,9 @@ func (s *Store) Append(rec Record) error {
 	return nil
 }
 
+// List returns every parseable record, oldest first. Corrupt lines (an
+// interrupted write, a hand edit) are skipped: one bad line must not make the
+// whole history unreadable.
 func (s *Store) List() ([]Record, error) {
 	f, err := os.Open(s.path)
 	if os.IsNotExist(err) {
@@ -107,6 +112,7 @@ func (s *Store) List() ([]Record, error) {
 	return recs, sc.Err()
 }
 
+// Get returns the record with the given history-list ID.
 func (s *Store) Get(id string) (Record, error) {
 	recs, err := s.List()
 	if err != nil {

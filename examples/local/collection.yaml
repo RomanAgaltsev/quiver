@@ -1,0 +1,2 @@
+defaults:
+  base: "http://localhost:8080"

@@ -51,7 +51,9 @@ func printResult(cmd *cobra.Command, rc *runContext, res runner.RunResult, quiet
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 
 	if res.Err != nil {
-		fmt.Fprintf(errOut, "%s: error: %v\n", res.Name, rc.Redactor.String(res.Err.Error()))
+		if _, err := fmt.Fprintf(errOut, "%s: error: %v\n", res.Name, rc.Redactor.String(res.Err.Error())); err != nil {
+			return err
+		}
 		return nil
 	}
 	// Dry-run prints the resolved request instead of a response (Q40).
@@ -62,17 +64,23 @@ func printResult(cmd *cobra.Command, rc *runContext, res runner.RunResult, quiet
 		if err := render.Render(out, res.Response, rc.Render); err != nil {
 			return err
 		}
-		fmt.Fprintln(out)
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
 	}
 	for _, a := range res.Assertions {
 		mark := "PASS"
 		if !a.Passed {
 			mark = "FAIL"
 		}
-		fmt.Fprintf(errOut, "  [%s] %s — %s\n", mark, a.Name, a.Detail)
+		if _, err := fmt.Fprintf(errOut, "  [%s] %s — %s\n", mark, a.Name, a.Detail); err != nil {
+			return err
+		}
 	}
 	if res.Failed {
-		fmt.Fprintf(errOut, "  [FAIL] %s: non-OK response (--check-status)\n", res.Name)
+		if _, err := fmt.Fprintf(errOut, "  [FAIL] %s: non-OK response (--check-status)\n", res.Name); err != nil {
+			return err
+		}
 	}
 	return nil
 }

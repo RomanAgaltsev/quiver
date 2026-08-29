@@ -14,6 +14,10 @@ import (
 	"github.com/RomanAgaltsev/quiver/internal/request"
 )
 
+// RunResult is the outcome of one request in a folder run: what ran, what the
+// response was, what it captured, which assertions passed. Err is set for
+// resolve/transport failures; Failed records a non-OK response under
+// --check-status without an Err.
 type RunResult struct {
 	Name       string
 	Path       string
@@ -35,12 +39,15 @@ type Options struct {
 	Overrides   map[string]string // --var; captures must not shadow these
 }
 
+// Runner executes requests through the registry, applying captures,
+// assertions, and history recording. It is safe to reuse across a folder run.
 type Runner struct {
 	reg  core.Registry
 	hist *history.Store // may be nil (history disabled)
 	opts Options
 }
 
+// New builds a Runner. hist may be nil to disable recording.
 func New(reg core.Registry, hist *history.Store, opts Options) *Runner {
 	return &Runner{reg: reg, hist: hist, opts: opts}
 }

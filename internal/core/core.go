@@ -66,6 +66,7 @@ type Executor interface {
 // it can be tested without standing up an HTTP server.
 type ExecutorFunc func(ctx context.Context, req ResolvedRequest) (*Response, error)
 
+// Execute calls f.
 func (f ExecutorFunc) Execute(ctx context.Context, req ResolvedRequest) (*Response, error) {
 	return f(ctx, req)
 }

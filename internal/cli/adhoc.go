@@ -82,7 +82,9 @@ func executeAdHoc(cmd *cobra.Command, rc *runContext, rr core.ResolvedRequest) e
 		if err := render.Render(cmd.OutOrStdout(), resp, rc.Render); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout())
+		if _, err := fmt.Fprintln(cmd.OutOrStdout()); err != nil {
+			return err
+		}
 	}
 	if rc.RunOpts.FailOnError && !resp.OK {
 		return exitCodeErr(1)

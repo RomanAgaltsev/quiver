@@ -87,7 +87,7 @@ func TestRunConfigErrorExitsTwoWithMessage(t *testing.T) {
 // A folder run follows `order`, not filenames.
 func TestRunFolderFollowsOrder(t *testing.T) {
 	var seen []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.URL.Path)
 	}))
 	defer srv.Close()
@@ -143,7 +143,7 @@ func TestRunRedactsSecretsAndRecordsHistory(t *testing.T) {
 // --dry-run resolves and prints without sending.
 func TestRunDryRunSendsNothing(t *testing.T) {
 	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits++ }))
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { hits++ }))
 	defer srv.Close()
 
 	dir := t.TempDir()

@@ -10,8 +10,10 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+// Protocol selects the executor and the request spec to decode.
 type Protocol string
 
+// The three MVP protocols; ad-hoc commands and request files share them.
 const (
 	ProtocolHTTP    Protocol = "http"
 	ProtocolGRPC    Protocol = "grpc"
@@ -23,6 +25,7 @@ type Duration struct {
 	d time.Duration
 }
 
+// Duration exposes the parsed value of a Timeout field.
 func (dur Duration) Duration() time.Duration { return dur.d }
 
 // UnmarshalYAML uses goccy's InterfaceUnmarshaler form on purpose. The []byte
@@ -47,6 +50,8 @@ func (dur *Duration) UnmarshalYAML(unmarshal func(any) error) error {
 	return nil
 }
 
+// Request is one request file. Exactly one protocol spec must be set; Parse
+// and Validate enforce the rest.
 type Request struct {
 	Name     string   `yaml:"name"`
 	Protocol Protocol `yaml:"protocol"`
@@ -64,6 +69,7 @@ type Request struct {
 	Path string `yaml:"-"`
 }
 
+// HTTPSpec is the http-protocol request body of a request file.
 type HTTPSpec struct {
 	Method  string            `yaml:"method"`
 	URL     string            `yaml:"url"`
@@ -75,6 +81,8 @@ type HTTPSpec struct {
 	BodyFile string `yaml:"body_file,omitempty"`
 }
 
+// GRPCSpec is the grpc-protocol request body of a request file: a unary call
+// to target with a JSON-encoded message.
 type GRPCSpec struct {
 	Target     string            `yaml:"target"` // host:port
 	Method     string            `yaml:"method"` // pkg.Service/Method
@@ -84,6 +92,8 @@ type GRPCSpec struct {
 	Plaintext  bool              `yaml:"plaintext,omitempty"`
 }
 
+// GraphQLSpec is the graphql-protocol request body of a request file: a
+// query (and optional variables JSON) POSTed as application/json.
 type GraphQLSpec struct {
 	URL       string            `yaml:"url"`
 	Headers   map[string]string `yaml:"headers,omitempty"`

@@ -125,7 +125,7 @@ func TestFailOnErrorMakesNon2xxFail(t *testing.T) {
 // --dry-run must send nothing.
 func TestDryRunSendsNothing(t *testing.T) {
 	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits++ }))
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { hits++ }))
 	defer srv.Close()
 
 	r := &request.Request{Name: "x", Protocol: request.ProtocolHTTP,

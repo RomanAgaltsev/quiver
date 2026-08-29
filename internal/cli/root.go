@@ -1,3 +1,5 @@
+// Package cli wires the cobra commands over the library packages: flag
+// parsing, the shared run context, output, and exit codes.
 package cli
 
 import (
@@ -49,6 +51,9 @@ func newRootCmd() *cobra.Command {
 	return root
 }
 
+// Execute runs the root command and returns the process exit code: 0 on
+// success, 1 for run failures, 2 for config errors, with the cause printed
+// exactly once (Q4).
 func Execute() int {
 	err := newRootCmd().Execute()
 	if err == nil {

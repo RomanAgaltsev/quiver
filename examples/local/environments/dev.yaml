@@ -1,0 +1,2 @@
+# The hermetic example runs against examples/local/server — no network needed.
+base: "http://localhost:8080"

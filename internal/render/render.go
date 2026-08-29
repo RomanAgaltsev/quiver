@@ -36,6 +36,8 @@ func ShouldColor(w io.Writer) bool {
 	return ok && isatty.IsTerminal(f.Fd())
 }
 
+// Render writes the response in opts.Format. It is the single output path for
+// every protocol; the redactor is applied here so no format can bypass it.
 func Render(w io.Writer, resp *core.Response, opts Options) error {
 	switch opts.Format {
 	case "raw":

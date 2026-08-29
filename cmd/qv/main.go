@@ -1,3 +1,4 @@
+// Command qv is the quiver CLI entry point; the exit code is the process exit code.
 package main
 
 import (

@@ -1,0 +1,44 @@
+name: ci
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod      # no literal version to drift
+      - run: go test -race -shuffle=on ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # Action v6 supports golangci-lint v1 ONLY — upstream's v7 release note
+      # says "The GitHub Action v7 supports golangci-lint v2 only". Our config is
+      # v2, so v6 + `version: latest` fails outright. v9 is current.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # A local govulncheck is blind to toolchain-pin CVEs when the local Go is
+      # newer than the pinned one, so CI is the authoritative run.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

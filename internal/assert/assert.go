@@ -13,12 +13,17 @@ import (
 	"github.com/RomanAgaltsev/quiver/internal/request"
 )
 
+// Result is the outcome of one assertion: Passed plus a human-readable Detail
+// that printResult shows verbatim next to the PASS/FAIL mark.
 type Result struct {
 	Name   string
 	Passed bool
 	Detail string
 }
 
+// Run evaluates each assertion against the response, in file order. A
+// malformed assertion (unknown operator, bad regex) is an error, not a fail —
+// the same config-vs-run distinction the rest of the CLI makes.
 func Run(assertions []request.Assertion, resp *core.Response) ([]Result, error) {
 	results := make([]Result, 0, len(assertions))
 	for i, a := range assertions {
@@ -36,6 +41,8 @@ func Run(assertions []request.Assertion, resp *core.Response) ([]Result, error) 
 	return results, nil
 }
 
+// AllPassed reports whether every result passed; an empty set passes. It is
+// the single place that turns assertion results into an exit-code decision.
 func AllPassed(rs []Result) bool {
 	for _, r := range rs {
 		if !r.Passed {
