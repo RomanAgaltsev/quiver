@@ -12,7 +12,15 @@ import (
 var Version = "0.0.0-dev"
 
 func newRootCmd() *cobra.Command {
-	root := &cobra.Command{ /* ...as in Task 1... */ }
+	root := &cobra.Command{
+		Use:     "qv",
+		Short:   "Quiver — a CLI-first multi-protocol API client (HTTP, gRPC, GraphQL)",
+		Version: Version,
+		// Q4: usage is for usage errors. A failed request is not a usage error,
+		// and Execute prints the cause itself, exactly once.
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
 	root.SetVersionTemplate("qv version {{.Version}}\n")
 
 	pf := root.PersistentFlags()
@@ -43,7 +51,7 @@ func newRootCmd() *cobra.Command {
 
 func Execute() int {
 	err := newRootCmd().Execute()
-	if err != nil {
+	if err == nil {
 		return 0
 	}
 	fmt.Fprintln(os.Stderr, "qv:", err)

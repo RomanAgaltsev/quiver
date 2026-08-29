@@ -72,12 +72,10 @@ func newRunContext(cmd *cobra.Command, target string) (*runContext, error) {
 		}
 		found, err := collection.FindRoot(probe)
 		if err != nil {
-			// No collection.yaml is fine for an ad-hoc single-file run: fall back
-			// to the target's own directory rather than failing.
-			if target == "" {
-				return nil, err
-			}
-			found = filepath.Dir(target)
+			// No collection.yaml is fine for ad-hoc commands and single-file runs:
+			// fall back to the probe directory rather than failing. Load tolerates a
+			// missing collection.yaml, so this yields an empty collection.
+			found = filepath.Dir(probe)
 		}
 		root = found
 	}
