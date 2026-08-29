@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/RomanAgaltsev/quiver/internal/core"
 	"github.com/RomanAgaltsev/quiver/internal/request"
-	"github.com/tidwall/gjson"
 )
 
 // Apply runs every capture against resp and returns the new variables.
