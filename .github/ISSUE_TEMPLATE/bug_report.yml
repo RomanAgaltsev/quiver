@@ -35,7 +35,7 @@ body:
     id: version
     attributes:
       label: qv version
-      description: Output of `qv version`.
+      description: Output of `qv --version`.
     validations:
       required: true
 
