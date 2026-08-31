@@ -1,5 +1,6 @@
 name: find pets by status
 protocol: http
+order: 10
 http:
   method: GET
   url: "{{base}}/pet/findByStatus"

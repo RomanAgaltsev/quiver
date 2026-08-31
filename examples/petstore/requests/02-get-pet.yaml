@@ -1,0 +1,16 @@
+name: get pet by id
+protocol: http
+order: 20
+http:
+  # A path-style variable: {{pet_id}} comes from collection defaults and is
+  # overridable per run with -V pet_id=...
+  method: GET
+  url: "{{base}}/pet/{{pet_id}}"
+assertions:
+  # Assertion values are compared literally — templates are expanded in the
+  # request, not in the check — so this pins the collection default.
+  - name: the requested pet came back
+    from: body
+    path: id
+    op: eq
+    value: "1"

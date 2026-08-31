@@ -1,37 +1,37 @@
 // Command local is the hermetic example server for examples/local (Q35): it
-// backs the collection's login → me chain, and the /graphql endpoint, with no
-// dependency on any third-party service.
+// backs the collection's login → me capture chain, its GraphQL query, and its
+// gRPC unary call, with no dependency on any third-party service.
+//
+// The handlers live in ./app so the end-to-end test can run the shipped
+// collection against exactly this code.
 package main
 
 import (
-	"encoding/json"
 	"log"
+	"net"
 	"net/http"
+	"time"
+
+	"google.golang.org/grpc"
+
+	"github.com/RomanAgaltsev/quiver/examples/local/server/app"
 )
 
-// loginToken is the bearer credential /login hands out and /me demands. The
-// example's capture chain exists to move exactly this value between requests.
-const loginToken = "tok-ada-42"
-
 func main() {
-	http.HandleFunc("/login", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": loginToken})
-	})
+	lis, err := net.Listen("tcp", ":50052")
+	if err != nil {
+		log.Fatalf("listen grpc: %v", err)
+	}
+	grpcSrv := grpc.NewServer()
+	app.RegisterGRPC(grpcSrv)
+	go func() { log.Fatal(grpcSrv.Serve(lis)) }()
+	log.Println("grpc  listening on :50052")
 
-	http.HandleFunc("/me", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer "+loginToken {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"name": "Ada", "login": "ada"})
-	})
-
-	http.HandleFunc("/graphql", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"hero":{"name":"R2-D2"}}}`))
-	})
-
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	httpSrv := &http.Server{
+		Addr:              ":8080",
+		Handler:           app.NewHTTPHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	log.Println("http  listening on :8080")
+	log.Fatal(httpSrv.ListenAndServe())
 }

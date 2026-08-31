@@ -9,5 +9,6 @@ qv run examples/petstore/requests/
 ```
 
 It exists to document what a small, realistic collection looks like against a
-public API: a request with query parameters, one with a path-style variable,
-and an assertion checking response shape.
+public API: `01-find-pets.yaml` uses query parameters and asserts on response
+shape, and `02-get-pet.yaml` interpolates a path-style variable that `-V
+pet_id=…` can override.

@@ -1,0 +1,19 @@
+name: echo
+protocol: grpc
+order: 40
+grpc:
+  target: "{{grpc_target}}"
+  method: "echo.Echo/Say"
+  message: '{"msg":"hi"}'
+  plaintext: true          # the example server speaks plaintext gRPC
+assertions:
+  # `OK` reads better than `0`; both spellings work for every operator.
+  - name: status is OK
+    from: status
+    op: eq
+    value: "OK"
+  - name: echoed back
+    from: body
+    path: msg
+    op: eq
+    value: "got:hi"
