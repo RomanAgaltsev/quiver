@@ -36,7 +36,9 @@ actions:
   allowed_patterns:
     - amannn/action-semantic-pull-request@*
     - crate-ci/typos@*
-    - docker://rhysd/actionlint
+    - docker://rhysd/actionlint:*
+    - github/codeql-action@*
+    - github/codeql-action/*@*
     - golangci/golangci-lint-action@*
     - googleapis/release-please-action@*
     - goreleaser/goreleaser-action@*
