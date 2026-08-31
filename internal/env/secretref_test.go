@@ -1,6 +1,8 @@
 package env
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -109,4 +111,88 @@ func TestResolveDoesNotMutateProtoFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"protos/echo.proto"}, r.GRPC.ProtoFiles, "the loaded request must be untouched")
 	require.NotEqual(t, r.GRPC.ProtoFiles, rr.GRPC.ProtoFiles)
+}
+
+func TestExpandMapAndExpandAll(t *testing.T) {
+	res := &Resolved{Vars: map[string]string{"a": "1", "b": "2"}}
+
+	got, err := res.ExpandMap(map[string]string{"x": "{{a}}", "y": "{{b}}"})
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"x": "1", "y": "2"}, got)
+
+	nilMap, err := res.ExpandMap(nil)
+	require.NoError(t, err)
+	require.Nil(t, nilMap)
+
+	_, err = res.ExpandMap(map[string]string{"x": "{{nope}}"})
+	require.Error(t, err)
+
+	s1, s2, empty := "{{a}}", "{{b}}", ""
+	require.NoError(t, res.ExpandAll(&s1, &s2, &empty, nil))
+	require.Equal(t, "1", s1)
+	require.Equal(t, "2", s2)
+
+	bad := "{{nope}}"
+	require.Error(t, res.ExpandAll(&bad))
+}
+
+func TestAddSecretDeduplicatesAndOrders(t *testing.T) {
+	res := &Resolved{}
+	res.AddSecret("short")
+	res.AddSecret("a-much-longer-secret")
+	res.AddSecret("short") // duplicate
+	res.AddSecret("")      // ignored: replacing "" would corrupt everything
+	require.Equal(t, []string{"a-much-longer-secret", "short"}, res.Secrets)
+}
+
+func TestLoadEnvironmentErrors(t *testing.T) {
+	_, err := LoadEnvironment(filepath.Join(t.TempDir(), "missing.yaml"))
+	require.Error(t, err)
+	require.True(t, core.IsConfigError(err))
+
+	bad := filepath.Join(t.TempDir(), "bad.yaml")
+	require.NoError(t, os.WriteFile(bad, []byte("::: not yaml :::\n"), 0o644))
+	_, err = LoadEnvironment(bad)
+	require.Error(t, err)
+	require.True(t, core.IsConfigError(err))
+}
+
+// Numbers and booleans in an environment file are coerced to strings, so a port
+// or a flag does not have to be quoted.
+func TestLoadEnvironmentCoercesScalars(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "dev.yaml")
+	require.NoError(t, os.WriteFile(p, []byte("port: 8080\ndebug: true\nbase: http://x\n"), 0o644))
+	m, err := LoadEnvironment(p)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"port": "8080", "debug": "true", "base": "http://x"}, m)
+}
+
+func TestResolveGRPCAndGraphQL(t *testing.T) {
+	res := &Resolved{Vars: map[string]string{"host": "h:1", "id": "7", "base": "http://x"}}
+
+	g := &request.Request{Name: "g", Protocol: request.ProtocolGRPC,
+		GRPC: &request.GRPCSpec{Target: "{{host}}", Method: "s.S/M",
+			Message:  `{"id":"{{id}}"}`,
+			Metadata: map[string]string{"x-id": "{{id}}"}}}
+	rr, err := Resolve(g, res, nil)
+	require.NoError(t, err)
+	require.Equal(t, "h:1", rr.GRPC.Target)
+	require.JSONEq(t, `{"id":"7"}`, rr.GRPC.Message)
+	require.Equal(t, "7", rr.GRPC.Metadata["x-id"])
+
+	q := &request.Request{Name: "q", Protocol: request.ProtocolGraphQL,
+		GraphQL: &request.GraphQLSpec{URL: "{{base}}/graphql", Query: "query { a }",
+			Variables: `{"id":"{{id}}"}`,
+			Headers:   map[string]string{"X-Id": "{{id}}"}}}
+	rr, err = Resolve(q, res, nil)
+	require.NoError(t, err)
+	require.Equal(t, "http://x/graphql", rr.GraphQL.URL)
+	require.JSONEq(t, `{"id":"7"}`, rr.GraphQL.Variables)
+	require.Equal(t, "7", rr.GraphQL.Headers["X-Id"])
+}
+
+func TestResolveUnknownProtocolIsAConfigError(t *testing.T) {
+	r := &request.Request{Name: "x", Protocol: request.Protocol("smtp")}
+	_, err := Resolve(r, &Resolved{Vars: map[string]string{}}, nil)
+	require.True(t, core.IsConfigError(err))
 }

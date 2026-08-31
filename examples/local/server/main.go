@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net"
 	"net/http"
@@ -18,7 +19,8 @@ import (
 )
 
 func main() {
-	lis, err := net.Listen("tcp", ":50052")
+	var lc net.ListenConfig
+	lis, err := lc.Listen(context.Background(), "tcp", ":50052")
 	if err != nil {
 		log.Fatalf("listen grpc: %v", err)
 	}

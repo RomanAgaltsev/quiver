@@ -84,9 +84,9 @@ func renderPretty(w io.Writer, resp *core.Response, opts Options) error {
 	}
 	statusText := status
 	if opts.Color {
-		c := color.New(color.FgGreen)
+		c := okColor
 		if !resp.OK {
-			c = color.New(color.FgRed)
+			c = failColor
 		}
 		statusText = c.Sprint(status)
 	}
@@ -131,12 +131,25 @@ func renderPretty(w io.Writer, resp *core.Response, opts Options) error {
 	return err
 }
 
+// forceColor builds a colour that emits escapes regardless of fatih/color's own
+// global TTY auto-detection. opts.Color is already the decision — ShouldColor
+// made it against the actual output writer — and letting the library
+// second-guess it means colour is wrong whenever the writer is not os.Stdout,
+// and silently untestable.
+func forceColor(attrs ...color.Attribute) *color.Color {
+	c := color.New(attrs...)
+	c.EnableColor()
+	return c
+}
+
 // Colours for highlighted JSON. Keys, strings and scalars are distinguished;
 // punctuation is left alone so the structure still reads as text when copied.
 var (
-	keyColor    = color.New(color.FgCyan)
-	stringColor = color.New(color.FgGreen)
-	scalarColor = color.New(color.FgYellow)
+	keyColor    = forceColor(color.FgCyan)
+	stringColor = forceColor(color.FgGreen)
+	scalarColor = forceColor(color.FgYellow)
+	okColor     = forceColor(color.FgGreen)
+	failColor   = forceColor(color.FgRed)
 )
 
 // highlightJSON colours an already-indented JSON document. It is a scanner

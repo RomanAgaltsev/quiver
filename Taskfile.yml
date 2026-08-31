@@ -1,23 +1,64 @@
 version: '3'
+
+vars:
+  VERSION:
+    sh: git describe --tags --always --dirty
+  LDFLAGS: -X github.com/RomanAgaltsev/quiver/internal/cli.Version={{.VERSION}}
+
 tasks:
   build:
-    cmds: ['go build -o qv ./cmd/qv']
+    desc: Build ./qv with the version stamped in.
+    cmds: ['go build -ldflags "{{.LDFLAGS}}" -o qv ./cmd/qv']
+
   test:
+    desc: >-
+      Fast local tests. -race needs a C toolchain, which Windows lacks by
+      default, so the race build lives in its own task and CI.
+    cmds: ['go test -shuffle=on ./...']
+
+  test:race:
+    desc: What CI runs. Needs gcc/clang (MSYS2, TDM-GCC) on Windows.
     cmds: ['go test -race -shuffle=on ./...']
+
+  test:binary:
+    desc: >-
+      Workaround for machines whose antivirus blocks executing a test binary out
+      of the temp directory ("Access is denied" from fork/exec). Builds each
+      package's test binary into ./bin and runs it from there.
+    cmds:
+      - go test -c -o bin/{{.PKG}}.test.exe ./internal/{{.PKG}}
+      - ./bin/{{.PKG}}.test.exe
+    requires:
+      vars: [PKG]
+
   cover:
-    cmds: ['go test -race -coverprofile=coverage.out ./...', 'go tool cover -func=coverage.out']
+    cmds:
+      - go test -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out
+
   lint:
     cmds: ['golangci-lint run']
+
   fmt:
     cmds: ['golangci-lint fmt']
+
   proto:
     desc: Regenerate the gRPC test fixtures (needs protoc + protoc-gen-go + protoc-gen-go-grpc).
     cmds:
       - >-
-        ./bin/protoc.exe --go_out=. --go_opt=module=github.com/RomanAgaltsev/quiver
+        protoc --go_out=. --go_opt=module=github.com/RomanAgaltsev/quiver
         --go-grpc_out=. --go-grpc_opt=module=github.com/RomanAgaltsev/quiver
         internal/transport/grpcx/testdata/echo.proto
+
   vuln:
     cmds: ['go run golang.org/x/vuln/cmd/govulncheck@latest ./...']
+
   tidy:
     cmds: ['go mod tidy']
+
+  example:
+    desc: Run the hermetic example collection against the local example server.
+    cmds:
+      - go run ./examples/local/server &
+      - sleep 2
+      - go run ./cmd/qv run examples/local/requests/ --env dev

@@ -193,3 +193,63 @@ func TestAuthProfileValidate(t *testing.T) {
 		})
 	}
 }
+
+// EffectiveURL is what both the executor and --dry-run use, so the preview and
+// the wire cannot disagree.
+func TestHTTPSpecEffectiveURL(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		spec  HTTPSpec
+		want  string
+		isErr bool
+	}{
+		{"no query block leaves the string alone", HTTPSpec{URL: "https://x/y?b=2&a=1"}, "https://x/y?b=2&a=1", false},
+		{"merges deterministically", HTTPSpec{URL: "https://x/y", Query: map[string]string{"b": "2", "a": "1"}}, "https://x/y?a=1&b=2", false},
+		{"adds rather than replaces", HTTPSpec{URL: "https://x/y?t=a", Query: map[string]string{"t": "b"}}, "https://x/y?t=a&t=b", false},
+		{"bad url", HTTPSpec{URL: "http://[::1]:namedport/"}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.spec.EffectiveURL()
+			if tc.isErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestOperandAndVal(t *testing.T) {
+	require.Equal(t, "", Assertion{}.Operand(), "an unset value reads as empty")
+	require.Equal(t, "x", Assertion{Value: Val("x")}.Operand())
+}
+
+func TestParseRejectsBothBodyAndBodyFileViaYAML(t *testing.T) {
+	r, err := Parse([]byte("name: r\nprotocol: http\nhttp:\n  method: GET\n  url: http://x\n" +
+		"  body: \"{}\"\n  body_file: b.json\n"))
+	require.NoError(t, err)
+	require.ErrorContains(t, r.Validate(), "not both")
+}
+
+func TestValidateRejectsMissingName(t *testing.T) {
+	r := &Request{Protocol: ProtocolHTTP, HTTP: &HTTPSpec{Method: "GET", URL: "http://x"}}
+	require.ErrorContains(t, r.Validate(), "name is required")
+}
+
+func TestValidateRejectsIncompleteProtocolBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  Request
+	}{
+		{"http without method", Request{Name: "r", Protocol: ProtocolHTTP, HTTP: &HTTPSpec{URL: "http://x"}}},
+		{"grpc without block", Request{Name: "r", Protocol: ProtocolGRPC}},
+		{"grpc without method", Request{Name: "r", Protocol: ProtocolGRPC, GRPC: &GRPCSpec{Target: "h:1"}}},
+		{"graphql without block", Request{Name: "r", Protocol: ProtocolGraphQL}},
+		{"graphql without query", Request{Name: "r", Protocol: ProtocolGraphQL, GraphQL: &GraphQLSpec{URL: "http://x"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Error(t, tc.req.Validate())
+		})
+	}
+}

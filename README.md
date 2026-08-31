@@ -26,10 +26,12 @@ qv run requests/ping.yaml --env dev
 ```
 
 The hermetic, fully offline example lives in
-[`examples/local`](examples/local):
+[`examples/local`](examples/local). It exercises all three protocols — an HTTP
+login whose token is captured and chained, a GraphQL query, and a gRPC unary
+call — with no network access:
 
 ```sh
-go run ./examples/local/server &    # local test server on :8080
+go run ./examples/local/server &    # HTTP on :8080, gRPC on :50052
 qv run examples/local/requests/ --env dev
 ```
 
@@ -132,13 +134,27 @@ captures:
 `errors` key. A failed assertion fails the run (exit 1) and prints
 `[FAIL] name — detail`.
 
+Presence and emptiness are different: a field explicitly set to `""` *exists*.
+Write `value: ""` to assert that it is empty; omitting `value:` entirely on an
+operator that needs one is a config error.
+
+For gRPC, `from: status` accepts the code number or its name — `"0"` and
+`"OK"` are interchangeable, for every operator.
+
 ## Secrets and redaction
 
-Anything resolved through `{{env:NAME}}` is a secret. Secrets are redacted
-(`***`) in rendered output, `--dry-run` output, and history records.
-`--show-secrets` disables redaction for debugging — never pipe its output
-anywhere trusted. `qv env show --env dev` prints the resolved, redacted
-variable set, which is the quickest way to verify the pipeline.
+Anything resolved through `{{env:NAME}}` is a secret. It works anywhere a
+template does — an environment file, `collection.yaml` defaults, or inline in a
+request file — and the resolved value is redacted (`***`) in rendered output, in
+`--dry-run`, and in history records.
+
+`--show-secrets` disables redaction for debugging; never pipe its output
+anywhere trusted. `qv env show --env dev` prints the resolved, redacted variable
+set, which is the quickest way to verify the pipeline.
+
+A template that cannot be resolved is a config error (exit 2), never text on the
+wire. That includes an unset `{{env:NAME}}` and a variable whose *value* is
+itself a template — substitution happens once and does not recurse.
 
 ## Ad-hoc requests
 
@@ -147,13 +163,26 @@ No file needed:
 ```sh
 qv http GET https://api.example.com/users -H "Accept: application/json" -q page=2
 qv http POST "$BASE/users" -d '{"name":"ada"}' --bearer "$TOKEN"
-qv grpc echo.Echo/Say localhost:50051 -d '{"msg":"hi"}' --plaintext -H "authorization: Bearer $T"
+qv grpc localhost:50051 echo.Echo/Say -d '{"msg":"hi"}' --plaintext --bearer "$TOKEN"
 qv graphql https://api.example.com/graphql -q '{ hero { name } }' --variables '{"ep":"JEDI"}'
 ```
 
-Ad-hoc commands resolve `--env`/`-V` variables in their arguments, so
-`qv http GET "{{base}}/users" --env dev` works. `--bearer` and `--user` are
-mutually exclusive.
+`qv grpc` takes the target first, like `grpcurl`. (The reverse order is accepted
+too — only one of the two arguments can contain a `/`.)
+
+Ad-hoc commands resolve `--env`/`-V` variables in every argument, including
+header, query and metadata *values*, so this works:
+
+```sh
+qv http GET "{{base}}/users" -H "Authorization: Bearer {{token}}" --env dev
+```
+
+`--bearer` and `--user` are mutually exclusive, and available on all three
+commands. Ad-hoc calls are recorded in history like any other run; they have no
+source file, so `qv history replay` declines them.
+
+A request body sent with no explicit `Content-Type` gets one inferred from its
+shape (`application/json` for JSON). Set the header yourself to override it.
 
 ## gRPC
 
@@ -174,13 +203,26 @@ With no `proto_files`, methods are resolved via server reflection. To add or
 regenerate the test fixtures: `task proto` (needs `protoc`,
 `protoc-gen-go`, `protoc-gen-go-grpc`).
 
+`auth:` profiles work for gRPC as they do for HTTP: `bearer` and `basic` become
+an `authorization` metadata entry, `apikey` becomes the header you name. An
+explicit `metadata:` entry of the same key wins over the profile.
+
 ## Exit codes
 
-| Code | Meaning                                                              |
-|------|----------------------------------------------------------------------|
-| 0    | every request ran and every assertion passed                        |
-| 1    | transport failure, failed assertion, or non-OK with `--check-status` |
-| 2    | configuration error (unknown env, bad YAML, unresolved variable, …)  |
+| Code | Meaning                                                                            |
+|------|------------------------------------------------------------------------------------|
+| 0    | every request ran and every assertion passed                                       |
+| 1    | transport failure, failed assertion, or non-OK response with `--check-status`      |
+| 2    | configuration error (unknown env, bad YAML, unresolved variable, unknown auth, …)  |
+
+Exit 2 covers everything that is the *definition's* fault and means nothing was
+sent — a malformed request file, an unresolved template, an auth profile that
+does not exist, a `body_file` that cannot be read, a capture path that does not
+resolve. Exit 1 means the request happened and the *result* was wrong. CI needs
+that distinction, so quiver never collapses one into the other.
+
+A dead target is exit 1 for every protocol: a gRPC call that never reached a
+server is a transport failure, not a response to inspect.
 
 A non-2xx HTTP status (or non-OK gRPC/GraphQL response) is a **normal,
 inspectable response**, not a failure: exit 0 unless an assertion says
@@ -201,36 +243,49 @@ on its own):
 
 ## Output
 
-`-o/--output` selects `pretty` (default; colour when on a TTY, honouring
-`NO_COLOR`), `raw` (body bytes verbatim), or `json` (the full normalized
-response). `-v/--verbose` adds response headers and timings; `--quiet`
-suppresses output entirely and reports only the exit code. `--dry-run` prints
-the resolved request instead of sending anything.
+`-o/--output` selects `pretty` (default; syntax-highlighted JSON and a coloured
+status line when on a TTY, honouring `NO_COLOR`), `raw` (body bytes verbatim),
+or `json` (the full normalized response). `-v/--verbose` adds response headers
+and timings; `--quiet` suppresses output entirely and reports only the exit code.
+
+`--dry-run` prints the resolved request instead of sending anything — including
+the URL with `query:` merged in, so the preview is exactly what would go on the
+wire. It writes nothing to disk.
 
 ## History
 
-Every run records to `.qv/history/history.jsonl` under the collection root:
-time-sortable IDs, the source request path (what replay re-runs), the
-environment used, and redacted `-V` overrides.
+Every run — saved or ad-hoc — records to `.qv/history/history.jsonl` under the
+collection root: time-sortable IDs, the source request path (what replay
+re-runs), the environment used, and redacted `-V` overrides. The file is created
+on first write, so a `--dry-run` leaves no trace.
 
 ```sh
 qv history list          # recent requests
 qv history replay <id>   # re-run a record's source file with current env/vars
 ```
 
-`replay` re-resolves the request from disk rather than replaying a frozen
-copy, so it reflects the current file and environment.
+`replay` re-resolves the request from disk rather than replaying a frozen copy,
+so it reflects the current file and environment. Ad-hoc records have no source
+file and are declined.
 
 ## Development
 
 ```sh
-task build   # build ./qv
-task test    # go test -race -shuffle=on ./...
-task lint    # golangci-lint run
-task fmt     # golangci-lint fmt
-task cover   # coverage report
-task vuln    # govulncheck
-task proto   # regenerate gRPC test fixtures
+task build        # build ./qv with the version stamped in
+task test         # go test -shuffle=on ./...
+task test:race    # what CI runs; -race needs a C toolchain on Windows
+task lint         # golangci-lint run
+task fmt          # golangci-lint fmt
+task cover        # coverage report
+task vuln         # govulncheck
+task proto        # regenerate gRPC test fixtures
+task example      # run the hermetic example end to end
 ```
 
-See [ROADMAP.md](ROADMAP.md) for post-MVP direction.
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get started and
+[ROADMAP.md](ROADMAP.md) for post-MVP direction. Security reports go through
+[SECURITY.md](SECURITY.md).
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE).
