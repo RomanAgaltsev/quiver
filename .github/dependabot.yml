@@ -1,10 +1,11 @@
+# NOTE: Dependabot updates Go modules and GitHub Actions, but it does NOT track
+# the golangci-lint version pinned as a string in .github/workflows/lint.yml, nor
+# the actionlint image tag in security.yml. Those have to be bumped by hand.
 version: 2
 updates:
   - package-ecosystem: gomod
-    directory: /
-    schedule:
-      interval: weekly
+    directory: "/"
+    schedule: { interval: weekly }
   - package-ecosystem: github-actions
-    directory: /
-    schedule:
-      interval: weekly
+    directory: "/"
+    schedule: { interval: weekly }

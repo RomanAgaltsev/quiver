@@ -1,0 +1,106 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-matrix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # cmd/qv has no test files, so `go test ./...` never proved it compiles.
+      - run: go build ./...
+
+  # The required status check for the build matrix; see the note on `test` below.
+  build:
+    if: always()
+    needs: [build-matrix]
+    runs-on: ubuntu-latest
+    steps:
+      - if: needs.build-matrix.result != 'success'
+        run: exit 1
+
+  test-matrix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is not optional here: this codebase has unusually much path
+        # logic (collection-root discovery, tree walking) and the maintainer
+        # develops on Windows, where `-race` cannot run without a C toolchain.
+        # CI is the only place the race build happens at all.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go test -race -shuffle=on -covermode=atomic -coverprofile=coverage.out ./...
+        shell: bash
+      # Publish the number rather than discard it. No token, no third party, no
+      # account — it lands on every run's summary page.
+      - if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          echo "### Coverage" >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
+
+  # The required status check. The matrix above reports one context per OS
+  # (`test-matrix (ubuntu-latest)` and so on), so a ruleset requiring a bare
+  # `test` would wait on a producer that does not exist. This job is that
+  # producer, and its name does not change when the matrix does.
+  test:
+    if: always()
+    needs: [test-matrix]
+    runs-on: ubuntu-latest
+    steps:
+      # always() means this job runs even when the matrix failed, so it must
+      # fail explicitly. A skipped job reports a skipped check, which does not
+      # block a merge — success by not running.
+      - if: needs.test-matrix.result != 'success'
+        run: exit 1
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go test -coverprofile=coverage.out ./...
+      - name: floor on the packages that decide what goes on the wire
+        # env resolves what is sent and render decides what is shown. Both were
+        # the least-covered packages, and both hid defects because of it.
+        run: |
+          go tool cover -func=coverage.out | tee cover.txt
+          for pkg in env render; do
+            pct=$(awk -v p="internal/$pkg/" '$0 ~ p {gsub("%","",$3); s+=$3; n++} END {if (n) print int(s/n); else print 0}' cover.txt)
+            echo "internal/$pkg: ${pct}%"
+            [ "$pct" -ge 75 ] || { echo "internal/$pkg coverage ${pct}% < 75%"; exit 1; }
+          done
+
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go build -o qv ./cmd/qv
+      - name: start the hermetic example server
+        run: go run ./examples/local/server & sleep 3
+      - name: run the example collection
+        # The plan's declared acceptance test. The collection is also covered by
+        # a Go test; this proves the documented invocation itself still works.
+        run: ./qv run examples/local/requests/ --env dev

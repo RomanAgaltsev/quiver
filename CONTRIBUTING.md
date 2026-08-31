@@ -42,12 +42,24 @@ builds that package's test binary into `./bin` and runs it from there.
 ## Before opening a pull request
 
 ```sh
-task fmt && task lint && task test && task vuln
+task ci      # fmt, lint, test, vuln
 ```
 
-CI additionally runs the race detector on Linux and Windows, a coverage floor on
-`internal/env` and `internal/render`, and the hermetic example collection end to
-end.
+**PR titles are Conventional Commits** — `feat:`, `fix:`, `chore:`, `docs:`,
+`refactor:`, `test:`, `build:`, `ci:`, `perf:`, `revert:`. The `pr-title` check
+enforces it, and release-please reads those titles to decide the next version, so
+a sloppy title silently produces a wrong release.
+
+CI additionally runs, and `main` requires: the race detector on Linux, macOS and
+Windows; a coverage floor on `internal/env` and `internal/render`; the hermetic
+example collection end to end; CodeQL, govulncheck and dependency review;
+actionlint over the workflows; and a spell check.
+
+## Releases
+
+Releases are cut by release-please: it keeps a PR open that accumulates the
+Conventional Commits since the last tag, and merging that PR creates the tag,
+which triggers goreleaser. Do not tag by hand.
 
 ## Design docs
 

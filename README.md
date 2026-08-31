@@ -271,6 +271,7 @@ file and are declined.
 ## Development
 
 ```sh
+task ci           # the local gate: fmt, lint, test, vuln
 task build        # build ./qv with the version stamped in
 task test         # go test -shuffle=on ./...
 task test:race    # what CI runs; -race needs a C toolchain on Windows

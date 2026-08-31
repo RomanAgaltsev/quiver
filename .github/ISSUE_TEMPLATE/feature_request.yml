@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest something qv should be able to do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >-
+        What are you trying to do that qv makes hard or impossible today?
+        Describe the situation rather than the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you have in mind
+      description: Optional — a sketch of the flag, file format or command.
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: What you do instead today
+      description: >-
+        Another tool, a shell wrapper, doing it by hand. This is the most useful
+        part of the report: it says how much the gap actually costs.
+
+  - type: checkboxes
+    id: roadmap
+    attributes:
+      label: Roadmap
+      options:
+        - label: >-
+            I have checked ROADMAP.md and this is not already a planned phase
+            (load testing, spec generation, spec linting, Postman/Bruno import,
+            scripting, TUI, gRPC streaming/OAuth2/WebSocket).
