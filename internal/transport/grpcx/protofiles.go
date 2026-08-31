@@ -9,6 +9,8 @@ import (
 	"github.com/bufbuild/protocompile"
 	"github.com/bufbuild/protocompile/linker"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"github.com/RomanAgaltsev/quiver/internal/core"
 )
 
 // protoCache memoizes compiled descriptor sets by file set, so a folder run of N
@@ -38,14 +40,16 @@ func resolveFromProtoFiles(paths []string, full, svc, method string) (protorefle
 		}
 		md := sd.Methods().ByName(protoreflect.Name(method))
 		if md == nil {
-			return nil, fmt.Errorf("grpcx: method %q not found in service %q (from %v)", method, svc, paths)
+			return nil, core.NewConfigError(
+				fmt.Errorf("grpcx: method %q not found in service %q (from %v)", method, svc, paths))
 		}
 		if md.IsStreamingClient() || md.IsStreamingServer() {
-			return nil, fmt.Errorf("grpcx: %s is a streaming RPC; quiver supports unary calls only", full)
+			return nil, core.NewConfigError(
+				fmt.Errorf("grpcx: %s is a streaming RPC; quiver supports unary calls only", full))
 		}
 		return md, nil
 	}
-	return nil, fmt.Errorf("grpcx: service %q not found in %v", svc, paths)
+	return nil, core.NewConfigError(fmt.Errorf("grpcx: service %q not found in %v", svc, paths))
 }
 
 func compileProtos(paths []string) (linker.Files, error) {
@@ -71,7 +75,9 @@ func compileProtos(paths []string) (linker.Files, error) {
 	}
 	files, err := compiler.Compile(context.Background(), names...)
 	if err != nil {
-		return nil, fmt.Errorf("grpcx: compile proto files %v: %w", paths, err)
+		// A .proto that does not compile is the definition's fault, not the
+		// target's, and nothing has been dialled yet.
+		return nil, core.NewConfigError(fmt.Errorf("grpcx: compile proto files %v: %w", paths, err))
 	}
 	protoCache.Store(key, files)
 	return files, nil

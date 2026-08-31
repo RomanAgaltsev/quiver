@@ -53,7 +53,6 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 		HTTP:     &request.HTTPSpec{Method: "POST", URL: spec.URL, Headers: headers, Body: string(body)},
 		Auth:     rr.Auth,
 		Timeout:  rr.Timeout,
-		Insecure: rr.Insecure,
 	}
 	resp, err := e.http.Execute(ctx, httpReq)
 	if err != nil {

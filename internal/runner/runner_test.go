@@ -34,7 +34,7 @@ func TestRunFolderChainsCaptures(t *testing.T) {
 		Captures: []request.Capture{{Var: "tok", From: "body", Path: "token"}}}
 	me := &request.Request{Name: "me", Protocol: request.ProtocolHTTP,
 		HTTP:       &request.HTTPSpec{Method: "GET", URL: srv.URL + "/me", Headers: map[string]string{"Authorization": "Bearer {{tok}}"}},
-		Assertions: []request.Assertion{{From: "status", Op: "eq", Value: "200"}}}
+		Assertions: []request.Assertion{{From: "status", Op: "eq", Value: request.Val("200")}}}
 
 	reg := core.Registry{request.ProtocolHTTP: httpx.New()}
 	rn := New(reg, nil, Options{})

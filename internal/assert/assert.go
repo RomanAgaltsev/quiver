@@ -27,11 +27,20 @@ type Result struct {
 func Run(assertions []request.Assertion, resp *core.Response) ([]Result, error) {
 	results := make([]Result, 0, len(assertions))
 	for i, a := range assertions {
-		actual, present, err := actualValue(a, resp)
+		vals, present, err := actualValues(a, resp)
 		if err != nil {
 			return nil, err
 		}
-		passed, detail := evaluate(a, resp, actual, present)
+		// Compiled once per assertion rather than once per evaluation. Validate has
+		// already proved it compiles, so a failure here is a genuine config error.
+		var re *regexp.Regexp
+		if a.Op == "matches" {
+			if re, err = regexp.Compile(a.Operand()); err != nil {
+				return nil, core.NewConfigError(
+					fmt.Errorf("assertion %d: invalid regex %q: %w", i, a.Operand(), err))
+			}
+		}
+		passed, detail := evaluate(a, vals, present, re)
 		name := a.Name
 		if name == "" {
 			name = fmt.Sprintf("assertion[%d]", i)
@@ -52,45 +61,74 @@ func AllPassed(rs []Result) bool {
 	return true
 }
 
-// actualValue returns the value at the assertion's source and whether it is
-// *present*. Presence and emptiness are different questions: the previous
-// revision conflated them, so `exists` reported a present-but-empty field as
-// absent — and disagreed with `capture`, which correctly used gjson's Exists on
-// the same response.
-func actualValue(a request.Assertion, resp *core.Response) (val string, present bool, err error) {
+// actualValues returns every representation of the source value that an
+// assertion may legitimately be written against, plus whether the source is
+// *present*.
+//
+// For a gRPC status that is the numeric code and its name, because spec §8
+// accepts both — and it has to hold for every operator, not only `eq`. Wiring
+// the name into `eq` alone meant `op: ne, value: "OK"` compared "0" against "OK"
+// and silently always passed, asserting the opposite of what was written.
+//
+// Presence and emptiness are different questions: conflating them made `exists`
+// report a present-but-empty field as absent, disagreeing with `capture`.
+func actualValues(a request.Assertion, resp *core.Response) (vals []string, present bool, err error) {
 	switch a.From {
 	case "status":
-		return strconv.Itoa(resp.Status), true, nil
+		vals = []string{strconv.Itoa(resp.Status)}
+		if resp.Protocol == request.ProtocolGRPC && resp.StatusText != "" {
+			vals = append(vals, resp.StatusText)
+		}
+		return vals, true, nil
 	case "header":
-		v := resp.HeaderGet(a.Path)
-		return v, v != "", nil
+		v, ok := resp.HeaderPresent(a.Path)
+		return []string{v}, ok, nil
 	case "body":
 		r := gjson.GetBytes(resp.Body, a.Path)
-		return r.String(), r.Exists(), nil
+		return []string{r.String()}, r.Exists(), nil
 	default:
 		// Unreachable in practice: request.Validate rejects unknown sources at
 		// load time so this is a config error (exit 2), not an assertion failure.
-		return "", false, fmt.Errorf("assertion: unknown source %q", a.From)
+		return nil, false, core.NewConfigError(fmt.Errorf("assertion: unknown source %q", a.From))
 	}
 }
 
-func evaluate(a request.Assertion, resp *core.Response, actual string, present bool) (bool, string) {
+func evaluate(a request.Assertion, vals []string, present bool, re *regexp.Regexp) (bool, string) {
+	want := a.Operand()
+	primary := vals[0]
+
+	// any: the assertion holds if *some* representation matches (a gRPC status is
+	// both "0" and "OK"). all: it must hold for every one, which is what makes a
+	// negative operator correct.
+	matchAny := func(f func(string) bool) bool {
+		for _, v := range vals {
+			if f(v) {
+				return true
+			}
+		}
+		return false
+	}
+	matchAll := func(f func(string) bool) bool {
+		for _, v := range vals {
+			if !f(v) {
+				return false
+			}
+		}
+		return true
+	}
+
 	switch a.Op {
 	case "eq":
-		if matchesStatus(a, resp, actual) {
-			return true, fmt.Sprintf("got %q want %q", actual, a.Value)
-		}
-		return actual == a.Value, fmt.Sprintf("got %q want %q", actual, a.Value)
+		return matchAny(func(v string) bool { return v == want }),
+			fmt.Sprintf("got %q want %q", primary, want)
 	case "ne":
-		return actual != a.Value, fmt.Sprintf("got %q", actual)
+		return matchAll(func(v string) bool { return v != want }),
+			fmt.Sprintf("got %q", primary)
 	case "contains":
-		return strings.Contains(actual, a.Value), fmt.Sprintf("%q does not contain %q", actual, a.Value)
+		return matchAny(func(v string) bool { return strings.Contains(v, want) }),
+			fmt.Sprintf("%q does not contain %q", primary, want)
 	case "matches":
-		re, err := regexp.Compile(a.Value) // Validate already compiled this successfully
-		if err != nil {
-			return false, fmt.Sprintf("invalid regex %q", a.Value)
-		}
-		return re.MatchString(actual), fmt.Sprintf("%q does not match %q", actual, a.Value)
+		return matchAny(re.MatchString), fmt.Sprintf("%q does not match %q", primary, want)
 	case "exists":
 		return present, fmt.Sprintf("present=%t", present)
 	case "not_exists":
@@ -99,14 +137,4 @@ func evaluate(a request.Assertion, resp *core.Response, actual string, present b
 		// Also unreachable: Validate rejects unknown ops (Q15).
 		return false, fmt.Sprintf("unknown op %q", a.Op)
 	}
-}
-
-// matchesStatus lets a gRPC status assertion be written by code name — value:
-// "OK" or "NOT_FOUND" — as well as by number. value: "0" for success is
-// unreadable next to the HTTP habit of value: "200".
-func matchesStatus(a request.Assertion, resp *core.Response, actual string) bool {
-	if a.From != "status" || resp.Protocol != request.ProtocolGRPC {
-		return false
-	}
-	return strings.EqualFold(a.Value, resp.StatusText) && actual != a.Value
 }

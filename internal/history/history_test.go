@@ -2,6 +2,7 @@ package history
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -86,4 +87,20 @@ func appendRawLine(st *Store, line string) error {
 	defer func() { _ = f.Close() }()
 	_, err = f.WriteString(line + "\n")
 	return err
+}
+
+// Open must not create anything: a --dry-run, a `qv env list`, or an ad-hoc call
+// typed in an unrelated repository would otherwise leave .qv/ behind in a
+// directory the user was merely standing in.
+func TestOpenCreatesNothingUntilAppend(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".qv", "history")
+
+	s, err := Open(dir, nil)
+	require.NoError(t, err)
+	_, statErr := os.Stat(dir)
+	require.True(t, os.IsNotExist(statErr), "Open must not create the history directory")
+
+	require.NoError(t, s.Append(Record{ID: "1", Name: "x"}))
+	_, statErr = os.Stat(filepath.Join(dir, "history.jsonl"))
+	require.NoError(t, statErr, "Append creates the directory it needs")
 }

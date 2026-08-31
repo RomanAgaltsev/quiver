@@ -4,7 +4,9 @@ package request
 import (
 	"bytes"
 	"fmt"
+	"net/url"
 	"regexp"
+	"sort"
 	"time"
 
 	"github.com/goccy/go-yaml"
@@ -81,6 +83,36 @@ type HTTPSpec struct {
 	BodyFile string `yaml:"body_file,omitempty"`
 }
 
+// EffectiveURL returns the URL that will actually be requested: URL with any
+// `query:` entries merged in. Both the executor and --dry-run call it, so the
+// preview and the wire cannot disagree.
+//
+// A hand-written query string is left exactly as given when there is nothing to
+// merge: url.Values.Encode sorts keys and re-percent-encodes, which silently
+// breaks signed URLs and order-sensitive filter DSLs.
+func (s *HTTPSpec) EffectiveURL() (string, error) {
+	u, err := url.Parse(s.URL)
+	if err != nil {
+		return "", fmt.Errorf("bad url %q: %w", s.URL, err)
+	}
+	if len(s.Query) == 0 {
+		return u.String(), nil
+	}
+	q := u.Query()
+	// Deterministic order: ranging the map directly would shuffle equal-key
+	// ordering between runs, and --dry-run output has to be stable.
+	keys := make([]string, 0, len(s.Query))
+	for k := range s.Query {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		q.Add(k, s.Query[k]) // Add, not Set: `?tag=x` plus query:{tag: y} means both
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
 // GRPCSpec is the grpc-protocol request body of a request file: a unary call
 // to target with a JSON-encoded message.
 type GRPCSpec struct {
@@ -109,12 +141,28 @@ type Capture struct {
 }
 
 // Assertion is a declarative check over a response.
+//
+// Value is a pointer so that an explicit `value: ""` — asserting a field *is*
+// the empty string, which real APIs return — is distinguishable from omitting
+// the key entirely. Requiring a non-empty operand made that assertion
+// impossible to write.
 type Assertion struct {
-	Name  string `yaml:"name,omitempty"`
-	From  string `yaml:"from"`           // "body" | "header" | "status"
-	Path  string `yaml:"path,omitempty"` // gjson path (body) or header name
-	Op    string `yaml:"op"`             // see validOps
-	Value string `yaml:"value,omitempty"`
+	Name  string  `yaml:"name,omitempty"`
+	From  string  `yaml:"from"`           // "body" | "header" | "status"
+	Path  string  `yaml:"path,omitempty"` // gjson path (body) or header name
+	Op    string  `yaml:"op"`             // see validOps
+	Value *string `yaml:"value,omitempty"`
+}
+
+// Val returns a pointer to v, for building an Assertion in Go rather than YAML.
+func Val(v string) *string { return &v }
+
+// Operand returns the assertion's comparison value, or "" when unset.
+func (a Assertion) Operand() string {
+	if a.Value == nil {
+		return ""
+	}
+	return *a.Value
 }
 
 // validSources are the response locations a capture or assertion may read.
@@ -143,6 +191,23 @@ type AuthProfile struct {
 	Token    string `yaml:"token,omitempty"`    // bearer (often a secret ref)
 	Header   string `yaml:"header,omitempty"`   // apikey header name, e.g. "X-API-Key"
 	Key      string `yaml:"key,omitempty"`      // apikey value (often a secret ref)
+}
+
+// Validate rejects a profile no executor can act on. An apikey profile with no
+// header name used to be a silent no-op: the request went out unauthenticated
+// and the only symptom was a 401 that looked like a server problem.
+func (p AuthProfile) Validate(name string) error {
+	switch p.Type {
+	case "basic", "bearer":
+		return nil
+	case "apikey":
+		if p.Header == "" {
+			return fmt.Errorf("auth profile %q: type apikey requires a header name", name)
+		}
+		return nil
+	default:
+		return fmt.Errorf("auth profile %q: unknown type %q (want basic, bearer, or apikey)", name, p.Type)
+	}
 }
 
 // Parse decodes a request file. Unknown fields are rejected so a mistyped key is
@@ -244,12 +309,12 @@ func (r *Request) validateAssertions() error {
 		if a.From != "status" && a.Path == "" {
 			return fmt.Errorf("%s: path is required when asserting on %s", where, a.From)
 		}
-		if opNeedsValue(a.Op) && a.Value == "" {
-			return fmt.Errorf("%s: op %q requires a value", where, a.Op)
+		if opNeedsValue(a.Op) && a.Value == nil {
+			return fmt.Errorf("%s: op %q requires a value (write `value: \"\"` to assert emptiness)", where, a.Op)
 		}
 		if a.Op == "matches" {
-			if _, err := regexp.Compile(a.Value); err != nil {
-				return fmt.Errorf("%s: invalid regex %q: %w", where, a.Value, err)
+			if _, err := regexp.Compile(a.Operand()); err != nil {
+				return fmt.Errorf("%s: invalid regex %q: %w", where, a.Operand(), err)
 			}
 		}
 	}

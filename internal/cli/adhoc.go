@@ -3,11 +3,12 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/RomanAgaltsev/quiver/internal/core"
-	"github.com/RomanAgaltsev/quiver/internal/env"
+	"github.com/RomanAgaltsev/quiver/internal/history"
 	"github.com/RomanAgaltsev/quiver/internal/render"
 	"github.com/RomanAgaltsev/quiver/internal/request"
 )
@@ -49,17 +50,42 @@ func adhocAuth(bearer, user string) (*request.AuthProfile, error) {
 // expandAll applies environment/variable resolution to ad-hoc string arguments,
 // so `qv http GET "{{base}}/users" --env dev` works.
 func expandAll(rc *runContext, values ...*string) error {
-	for _, p := range values {
-		if p == nil || *p == "" {
+	return rc.Resolved.ExpandAll(values...)
+}
+
+// expandMaps does the same for the repeatable key/value flags — headers, query
+// params, metadata. These are arguments too, and the most valuable ad-hoc use of
+// a variable is a token in a header, which is exactly what used to be skipped.
+func expandMaps(rc *runContext, maps ...*map[string]string) error {
+	for _, m := range maps {
+		if m == nil || *m == nil {
 			continue
 		}
-		v, err := env.Expand(*p, rc.Resolved.Vars)
+		out, err := rc.Resolved.ExpandMap(*m)
 		if err != nil {
 			return err
 		}
-		*p = v
+		*m = out
 	}
 	return nil
+}
+
+// adhocName labels an unsaved request in the history log. It has no file to name
+// it, so the call itself is the name.
+func adhocName(rr core.ResolvedRequest) string {
+	switch {
+	case rr.HTTP != nil:
+		url, err := rr.HTTP.EffectiveURL()
+		if err != nil {
+			url = rr.HTTP.URL
+		}
+		return fmt.Sprintf("%s %s", strings.ToUpper(rr.HTTP.Method), url)
+	case rr.GRPC != nil:
+		return fmt.Sprintf("%s @ %s", rr.GRPC.Method, rr.GRPC.Target)
+	case rr.GraphQL != nil:
+		return "POST " + rr.GraphQL.URL
+	}
+	return "ad-hoc"
 }
 
 // executeAdHoc runs one unsaved request and renders it.
@@ -76,8 +102,28 @@ func executeAdHoc(cmd *cobra.Command, rc *runContext, rr core.ResolvedRequest) e
 	}
 	resp, err := exec.Execute(cmd.Context(), rr)
 	if err != nil {
-		return runErr(err)
+		return classify(err)
 	}
+
+	// An ad-hoc call is exactly the kind of exploration history exists for, and
+	// it is the only quiver activity nothing else on disk records. It has no
+	// source file, so `history replay` refuses it by design.
+	if rc.History != nil {
+		if err := rc.History.Append(history.Record{
+			ID:       history.NewID(),
+			Time:     time.Now(),
+			Name:     adhocName(rr),
+			Protocol: string(rr.Protocol),
+			Status:   resp.Status,
+			OK:       resp.OK,
+			Duration: resp.Duration.String(),
+			Env:      rc.RunOpts.Env,
+			Vars:     rc.RunOpts.Overrides,
+		}); err != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "qv: warning: history not recorded: %v\n", err)
+		}
+	}
+
 	if quiet, _ := cmd.Flags().GetBool("quiet"); !quiet {
 		if err := render.Render(cmd.OutOrStdout(), resp, rc.Render); err != nil {
 			return err
@@ -87,7 +133,7 @@ func executeAdHoc(cmd *cobra.Command, rc *runContext, rr core.ResolvedRequest) e
 		}
 	}
 	if rc.RunOpts.FailOnError && !resp.OK {
-		return exitCodeErr(1)
+		return &exitError{code: 1, err: fmt.Errorf("%s: non-OK response (--check-status)", adhocName(rr))}
 	}
 	return nil
 }

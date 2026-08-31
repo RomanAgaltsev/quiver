@@ -48,7 +48,8 @@ func Render(w io.Writer, resp *core.Response, opts Options) error {
 	case "pretty":
 		return renderPretty(w, resp, opts)
 	default:
-		return fmt.Errorf("render: unknown format %q (want pretty, raw, or json)", opts.Format)
+		return core.NewConfigError(
+			fmt.Errorf("render: unknown format %q (want pretty, raw, or json)", opts.Format))
 	}
 }
 
@@ -120,8 +121,86 @@ func renderPretty(w io.Writer, resp *core.Response, opts Options) error {
 	} else {
 		pretty.Write(resp.Body)
 	}
-	_, err := w.Write(opts.Redactor.Bytes(pretty.Bytes()))
+	// Redact before highlighting: the highlighter inserts escape sequences, and a
+	// secret split across one would survive redaction.
+	body := opts.Redactor.Bytes(pretty.Bytes())
+	if opts.Color && json.Valid(resp.Body) {
+		body = highlightJSON(body)
+	}
+	_, err := w.Write(body)
 	return err
+}
+
+// Colours for highlighted JSON. Keys, strings and scalars are distinguished;
+// punctuation is left alone so the structure still reads as text when copied.
+var (
+	keyColor    = color.New(color.FgCyan)
+	stringColor = color.New(color.FgGreen)
+	scalarColor = color.New(color.FgYellow)
+)
+
+// highlightJSON colours an already-indented JSON document. It is a scanner
+// rather than a re-encode so that byte-for-byte layout — which json.Indent has
+// already decided — survives untouched, and so that a body which is valid JSON
+// but not round-trippable through a Go map cannot be reordered.
+func highlightJSON(b []byte) []byte {
+	var out bytes.Buffer
+	out.Grow(len(b) * 2)
+
+	for i := 0; i < len(b); {
+		switch c := b[i]; {
+		case c == '"':
+			end := scanJSONString(b, i)
+			lit := string(b[i:end])
+			// A string immediately followed by a colon is a key.
+			j := end
+			for j < len(b) && (b[j] == ' ' || b[j] == '\t') {
+				j++
+			}
+			if j < len(b) && b[j] == ':' {
+				out.WriteString(keyColor.Sprint(lit))
+			} else {
+				out.WriteString(stringColor.Sprint(lit))
+			}
+			i = end
+		case isScalarStart(c):
+			end := i
+			for end < len(b) && isScalarByte(b[end]) {
+				end++
+			}
+			out.WriteString(scalarColor.Sprint(string(b[i:end])))
+			i = end
+		default:
+			out.WriteByte(c)
+			i++
+		}
+	}
+	return out.Bytes()
+}
+
+// scanJSONString returns the index just past the string literal starting at i.
+func scanJSONString(b []byte, i int) int {
+	i++ // opening quote
+	for i < len(b) {
+		switch b[i] {
+		case '\\':
+			i += 2 // an escape consumes the next byte, quotes included
+			continue
+		case '"':
+			return i + 1
+		}
+		i++
+	}
+	return len(b)
+}
+
+func isScalarStart(c byte) bool {
+	return c == '-' || (c >= '0' && c <= '9') || c == 't' || c == 'f' || c == 'n'
+}
+
+func isScalarByte(c byte) bool {
+	return c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9') ||
+		(c >= 'a' && c <= 'z') || c == 'E'
 }
 
 // DryRun prints the fully resolved request without sending it.
@@ -136,14 +215,14 @@ func DryRun(w io.Writer, rr *core.ResolvedRequest, opts Options) error {
 		return err
 	}
 
-	writeHeaders := func(h map[string]string) error {
+	writePairs := func(prefix string, h map[string]string) error {
 		keys := make([]string, 0, len(h))
 		for k := range h {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if err := line("%s: %s", k, h[k]); err != nil {
+			if err := line("%s%s: %s", prefix, k, h[k]); err != nil {
 				return err
 			}
 		}
@@ -152,16 +231,17 @@ func DryRun(w io.Writer, rr *core.ResolvedRequest, opts Options) error {
 
 	switch {
 	case rr.HTTP != nil:
-		if err := line("%s %s", strings.ToUpper(rr.HTTP.Method), rr.HTTP.URL); err != nil {
+		// The URL with `query:` merged in, not the raw one: a dry run that shows a
+		// different request from the one that would be sent is worse than useless.
+		target, err := rr.HTTP.EffectiveURL()
+		if err != nil {
+			return core.NewConfigError(err)
+		}
+		if err := line("%s %s", strings.ToUpper(rr.HTTP.Method), target); err != nil {
 			return err
 		}
-		if err := writeHeaders(rr.HTTP.Headers); err != nil {
+		if err := writePairs("", rr.HTTP.Headers); err != nil {
 			return err
-		}
-		if len(rr.HTTP.Query) > 0 {
-			if err := writeHeaders(rr.HTTP.Query); err != nil {
-				return err
-			}
 		}
 		if rr.HTTP.Body != "" {
 			if err := line("\n%s", rr.HTTP.Body); err != nil {
@@ -172,7 +252,9 @@ func DryRun(w io.Writer, rr *core.ResolvedRequest, opts Options) error {
 		if err := line("gRPC %s %s", rr.GRPC.Target, rr.GRPC.Method); err != nil {
 			return err
 		}
-		if err := writeHeaders(rr.GRPC.Metadata); err != nil {
+		// Prefixed, so metadata is not mistaken for the HTTP headers the previous
+		// revision rendered it identically to.
+		if err := writePairs("metadata ", rr.GRPC.Metadata); err != nil {
 			return err
 		}
 		if rr.GRPC.Message != "" {
@@ -184,7 +266,7 @@ func DryRun(w io.Writer, rr *core.ResolvedRequest, opts Options) error {
 		if err := line("POST %s", rr.GraphQL.URL); err != nil {
 			return err
 		}
-		if err := writeHeaders(rr.GraphQL.Headers); err != nil {
+		if err := writePairs("", rr.GraphQL.Headers); err != nil {
 			return err
 		}
 		if err := line("\n%s", rr.GraphQL.Query); err != nil {

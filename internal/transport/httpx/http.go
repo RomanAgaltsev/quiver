@@ -4,10 +4,10 @@ package httpx
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -73,30 +73,34 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 		defer cancel()
 	}
 
-	u, err := url.Parse(spec.URL)
+	target, err := spec.EffectiveURL()
 	if err != nil {
-		return nil, fmt.Errorf("httpx: bad url: %w", err)
+		return nil, core.NewConfigError(fmt.Errorf("httpx: %w", err))
 	}
-
-	q := u.Query()
-	for k, v := range spec.Query {
-		q.Set(k, v)
-	}
-	u.RawQuery = q.Encode()
 
 	var body io.Reader
 	if spec.Body != "" {
 		body = strings.NewReader(spec.Body)
 	}
-	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(spec.Method), u.String(), body)
+	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(spec.Method), target, body)
 	if err != nil {
-		return nil, fmt.Errorf("httpx: build request: %w", err)
+		return nil, core.NewConfigError(fmt.Errorf("httpx: build request: %w", err))
 	}
 
 	for k, v := range spec.Headers {
 		req.Header.Set(k, v)
 	}
-	applyAuth(req, rr.Auth)
+	// curl defaults a body to form encoding and HTTPie to JSON; sending *no*
+	// content type is the one option that fails against most APIs. The user's own
+	// header always wins — this only fills a gap.
+	if body != nil && req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", sniffContentType(spec.Body))
+	}
+	// An explicit Authorization header is more specific than the profile the
+	// request merely references, so it must not be silently overwritten.
+	if req.Header.Get("Authorization") == "" {
+		applyAuth(req, rr.Auth)
+	}
 
 	start := time.Now()
 	resp, err := e.client.Do(req)
@@ -118,6 +122,19 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 		Body:       raw,
 		Duration:   time.Since(start),
 	}, nil
+}
+
+// sniffContentType guesses a content type from the body's shape. JSON is the
+// overwhelming default for the APIs quiver targets; anything else is text until
+// it looks like markup.
+func sniffContentType(body string) string {
+	if json.Valid([]byte(body)) {
+		return "application/json"
+	}
+	if strings.HasPrefix(strings.TrimSpace(body), "<") {
+		return "application/xml"
+	}
+	return "text/plain; charset=utf-8"
 }
 
 func applyAuth(req *http.Request, a *request.AuthProfile) {

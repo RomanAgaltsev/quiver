@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 
+	"github.com/RomanAgaltsev/quiver/internal/core"
 	"github.com/RomanAgaltsev/quiver/internal/request"
 )
 
@@ -23,6 +25,9 @@ type Collection struct {
 	// FailOnError makes any HTTP >= 400, non-OK gRPC code or GraphQL errors
 	// payload fail the run even with no assertions declared.
 	FailOnError bool `yaml:"fail_on_error"`
+	// Timeout is the collection-wide default: below a request's own `timeout:`
+	// and above the executor's built-in default (spec §5).
+	Timeout request.Duration `yaml:"timeout,omitempty"`
 }
 
 // Load reads collection.yaml at root. A missing file yields an empty collection.
@@ -37,11 +42,12 @@ func Load(root string) (*Collection, error) {
 		return c, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read collection.yaml: %w", err)
+		return nil, core.NewConfigError(fmt.Errorf("read collection.yaml: %w", err))
 	}
 	dec := yaml.NewDecoder(bytes.NewReader(data), yaml.DisallowUnknownField())
 	if err := dec.Decode(c); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", filepath.Join(root, "collection.yaml"), err)
+		return nil, core.NewConfigError(
+			fmt.Errorf("parse %s: %w", filepath.Join(root, "collection.yaml"), err))
 	}
 	c.Root = root
 	if c.Defaults == nil {
@@ -50,6 +56,20 @@ func Load(root string) (*Collection, error) {
 	if c.Auth == nil {
 		c.Auth = map[string]request.AuthProfile{}
 	}
+	// Validate profiles here rather than at use: an apikey profile with no header
+	// name is a silent no-op at send time, and the symptom is a 401 that looks
+	// like a server problem.
+	names := make([]string, 0, len(c.Auth))
+	for name := range c.Auth {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic error for a file with several bad profiles
+	for _, name := range names {
+		if err := c.Auth[name].Validate(name); err != nil {
+			return nil, core.NewConfigError(
+				fmt.Errorf("%s: %w", filepath.Join(root, "collection.yaml"), err))
+		}
+	}
 	return c, nil
 }
 
@@ -57,18 +77,38 @@ func Load(root string) (*Collection, error) {
 func LoadRequest(path string) (*request.Request, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read request %s: %w", path, err)
+		return nil, core.NewConfigError(fmt.Errorf("read request %s: %w", path, err))
 	}
+	return parseRequest(path, data)
+}
+
+// parseRequest turns already-read bytes into a validated request.
+func parseRequest(path string, data []byte) (*request.Request, error) {
 	r, err := request.Parse(data)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, core.NewConfigError(fmt.Errorf("%s: %w", path, err))
 	}
 	// Q6: replay and history need to know where this came from; nothing else does.
 	r.Path = path
 	if err := r.Validate(); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, core.NewConfigError(fmt.Errorf("%s: %w", path, err))
 	}
 	return r, nil
+}
+
+// isRequestFile reports whether a YAML file is plausibly a request. A collection
+// is often the repository root, so the tree also holds workflow, lint and compose
+// files that are not ours to parse — and strict decoding turns every one of them
+// into a hard error that blocks the whole folder run. A request always declares
+// `protocol:`; nothing else in a repo does.
+func isRequestFile(data []byte) bool {
+	var probe struct {
+		Protocol string `yaml:"protocol"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return probe.Protocol != ""
 }
 
 // FindRoot locates the collection root by searching upward for collection.yaml.
@@ -118,9 +158,11 @@ func FindRoot(target string) (string, error) {
 func ListRequests(target string) ([]*request.Request, error) {
 	info, err := os.Stat(target)
 	if err != nil {
-		return nil, err
+		return nil, core.NewConfigError(err)
 	}
 	if !info.IsDir() {
+		// An explicitly named file is always treated as a request: naming it is the
+		// user asserting that it is one, so a bad file must be an error, not a skip.
 		r, err := LoadRequest(target)
 		if err != nil {
 			return nil, err
@@ -134,7 +176,10 @@ func ListRequests(target string) ([]*request.Request, error) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == "environments" || d.Name() == ".qv" || d.Name() == ".git" {
+			// Any dot-directory is tool state, not collection content: .git, .qv,
+			// .github, .idea, .vscode. Naming them one by one only ever catches the
+			// few we happened to think of.
+			if d.Name() == "environments" || (d.Name() != "." && strings.HasPrefix(d.Name(), ".")) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -148,12 +193,19 @@ func ListRequests(target string) ([]*request.Request, error) {
 		return nil
 	})
 	if walkErr != nil {
-		return nil, walkErr
+		return nil, core.NewConfigError(walkErr)
 	}
 
 	reqs := make([]*request.Request, 0, len(paths))
 	for _, p := range paths {
-		r, err := LoadRequest(p)
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return nil, core.NewConfigError(fmt.Errorf("read request %s: %w", p, err))
+		}
+		if !isRequestFile(data) {
+			continue // not ours; a folder run must not trip over a Taskfile
+		}
+		r, err := parseRequest(p, data)
 		if err != nil {
 			return nil, err
 		}

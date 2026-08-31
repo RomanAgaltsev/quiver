@@ -93,7 +93,7 @@ func TestValidateRejectsUnknownAssertionOp(t *testing.T) {
 	r := &Request{
 		Name: "x", Protocol: ProtocolHTTP,
 		HTTP:       &HTTPSpec{Method: "GET", URL: "http://x"},
-		Assertions: []Assertion{{From: "status", Op: "equals", Value: "200"}},
+		Assertions: []Assertion{{From: "status", Op: "equals", Value: Val("200")}},
 	}
 	err := r.Validate()
 	require.Error(t, err)
@@ -126,7 +126,7 @@ func TestValidateAssertionsAndCaptures(t *testing.T) {
 	})
 	t.Run("matches needs a valid regex", func(t *testing.T) {
 		r := base()
-		r.Assertions = []Assertion{{From: "body", Path: "n", Op: "matches", Value: "("}}
+		r.Assertions = []Assertion{{From: "body", Path: "n", Op: "matches", Value: Val("(")}}
 		require.Error(t, r.Validate())
 	})
 	t.Run("not_exists is accepted", func(t *testing.T) { // Q11
@@ -153,4 +153,43 @@ func TestValidateRejectsBodyAndBodyFile(t *testing.T) {
 		HTTP: &HTTPSpec{Method: "POST", URL: "http://x", Body: "{}", BodyFile: "b.json"},
 	}
 	require.Error(t, r.Validate())
+}
+
+// `value: ""` asserts that a field is the empty string. Requiring a non-empty
+// operand made that impossible to write; a *missing* key is still an error.
+func TestValidateDistinguishesEmptyValueFromMissingValue(t *testing.T) {
+	base := func(a Assertion) *Request {
+		return &Request{Name: "r", Protocol: ProtocolHTTP,
+			HTTP:       &HTTPSpec{Method: "GET", URL: "http://x"},
+			Assertions: []Assertion{a}}
+	}
+	require.NoError(t, base(Assertion{From: "body", Path: "e", Op: "eq", Value: Val("")}).Validate())
+
+	err := base(Assertion{From: "body", Path: "e", Op: "eq"}).Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "requires a value")
+}
+
+func TestAuthProfileValidate(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		profile AuthProfile
+		wantErr bool
+	}{
+		{"bearer", AuthProfile{Type: "bearer", Token: "t"}, false},
+		{"basic", AuthProfile{Type: "basic", Username: "u"}, false},
+		{"apikey with header", AuthProfile{Type: "apikey", Header: "X-Key", Key: "k"}, false},
+		{"apikey without header", AuthProfile{Type: "apikey", Key: "k"}, true},
+		{"unknown type", AuthProfile{Type: "oauth2"}, true},
+		{"empty type", AuthProfile{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.profile.Validate("main")
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }

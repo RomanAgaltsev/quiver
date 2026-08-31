@@ -4,6 +4,7 @@ package secret
 
 import (
 	"bytes"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -21,18 +22,36 @@ type Redactor struct {
 // env.Resolved.Secrets. Empty values are dropped: replacing "" would corrupt every
 // string it touched.
 func NewRedactor(secrets []string) *Redactor {
-	kept := make([]string, 0, len(secrets))
+	rd := &Redactor{}
+	rd.Add(secrets...)
+	return rd
+}
+
+// Add registers further secret values. Secrets are not all known up front: a
+// {{env:NAME}} written inside a request file is discovered during resolution,
+// long after render and history were handed their redactor, and a resolved but
+// unredacted token is strictly worse than an unresolved one.
+//
+// The CLI is single-threaded, so this needs no locking; a concurrent consumer
+// would have to add its secrets before starting work.
+func (rd *Redactor) Add(secrets ...string) {
+	if rd == nil { // a nil Redactor redacts nothing; adding to it is a no-op
+		return
+	}
 	for _, s := range secrets {
-		if s != "" {
-			kept = append(kept, s)
+		if s == "" { // replacing "" would corrupt every string it touched
+			continue
 		}
+		if slices.Contains(rd.secrets, s) {
+			continue
+		}
+		rd.secrets = append(rd.secrets, s)
 	}
 	// Longest first, so a short secret that is a substring of a longer one cannot
 	// partially redact it and leave the tail exposed.
-	sort.Slice(kept, func(i, j int) bool {
-		return len(kept[i]) > len(kept[j])
+	sort.SliceStable(rd.secrets, func(i, j int) bool {
+		return len(rd.secrets[i]) > len(rd.secrets[j])
 	})
-	return &Redactor{secrets: kept}
 }
 
 // String returns s with every known secret replaced.

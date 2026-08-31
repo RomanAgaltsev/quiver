@@ -4,9 +4,11 @@ package grpcx
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -231,14 +234,37 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 	if spec.Message != "" {
 		if err := (protojson.UnmarshalOptions{DiscardUnknown: false}).
 			Unmarshal([]byte(spec.Message), reqMsg); err != nil {
-			return nil, fmt.Errorf("grpcx: request message JSON: %w", err)
+			// The message in the file does not fit the schema: the definition is
+			// wrong, so this is exit 2 and nothing is sent.
+			return nil, core.NewConfigError(fmt.Errorf("grpcx: request message JSON: %w", err))
 		}
 	}
 
-	if len(spec.Metadata) > 0 {
-		pairs := make([]string, 0, len(spec.Metadata)*2)
-		for k, v := range spec.Metadata {
-			pairs = append(pairs, k, v)
+	// Merged through a map, not appended: AppendToOutgoingContext *adds* a value
+	// for a duplicate key rather than replacing it, and the server would then read
+	// the first — the profile — even though the request named the header itself.
+	// The request file is the more specific of the two, so it wins.
+	authPairs, err := authMetadata(rr.Auth)
+	if err != nil {
+		return nil, err
+	}
+	send := make(map[string]string, len(spec.Metadata)+1)
+	for i := 0; i+1 < len(authPairs); i += 2 {
+		send[authPairs[i]] = authPairs[i+1]
+	}
+	for k, v := range spec.Metadata {
+		send[strings.ToLower(k)] = v
+	}
+	if len(send) > 0 {
+		pairs := make([]string, 0, len(send)*2)
+		// Sorted, so the outgoing metadata is deterministic run to run.
+		keys := make([]string, 0, len(send))
+		for k := range send {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			pairs = append(pairs, k, send[k])
 		}
 		ctx = metadata.AppendToOutgoingContext(ctx, pairs...)
 	}
@@ -246,6 +272,11 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 	// Ask for leading and trailing metadata, or Response.Headers stays empty
 	// and `from: header` captures/assertions silently return nothing for gRPC.
 	var hdr, tlr metadata.MD
+
+	// peer stays empty when the call never reached a server, which is how a dial
+	// failure is told apart from a status the server chose to return. httpx
+	// reports the same event as an error, and the two protocols must agree.
+	var pr peer.Peer
 
 	// Invoke on the ClientConn directly with a dynamicpb reply rather than
 	// through grpcdynamic.Stub. The stub builds its reply with jhump's own
@@ -256,7 +287,8 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 	respMsg := dynamicpb.NewMessage(md.Output())
 	fullMethod := "/" + string(md.FullName().Parent()) + "/" + string(md.Name())
 	start := time.Now()
-	callErr := c.cc.Invoke(ctx, fullMethod, reqMsg, respMsg, grpc.Header(&hdr), grpc.Trailer(&tlr))
+	callErr := c.cc.Invoke(ctx, fullMethod, reqMsg, respMsg,
+		grpc.Header(&hdr), grpc.Trailer(&tlr), grpc.Peer(&pr))
 	dur := time.Since(start)
 
 	resp := &core.Response{Protocol: rr.Protocol, Duration: dur, Headers: map[string][]string{}}
@@ -268,11 +300,17 @@ func (e *executor) Execute(ctx context.Context, rr core.ResolvedRequest) (*core.
 	}
 
 	if callErr != nil {
+		if pr.Addr == nil {
+			// The call never reached a server: a transport failure, exactly like
+			// "connection refused" over HTTP, and it must exit 1 the way httpx does.
+			// Returning it as an inspectable response made a gRPC target that was
+			// simply *down* report exit 0 — a green pipeline that should be red.
+			return nil, fmt.Errorf("grpcx: %s: %w", spec.Target, callErr)
+		}
 		st, _ := status.FromError(callErr)
-		// A gRPC error status is a normal, inspectable response, not a transport
-		// error — the same way an HTTP 404 is. Genuine transport failures
-		// (Unavailable from a refused dial) surface here too and are still
-		// inspectable; --check-status / assertions decide whether they fail the run.
+		// A status the server chose to return is a normal, inspectable response,
+		// the same way an HTTP 404 is; --check-status / assertions decide whether
+		// it fails the run.
 		resp.Status = int(st.Code())
 		resp.StatusText = st.Code().String()
 		resp.OK = false
@@ -314,7 +352,39 @@ func splitMethod(full string) (service, method string, err error) {
 	full = strings.TrimPrefix(full, "/")
 	i := strings.LastIndex(full, "/")
 	if i < 0 {
-		return "", "", fmt.Errorf("grpcx: method %q must be pkg.Service/Method", full)
+		// A malformed method name is a usage error, not a transport failure: it is
+		// caught before anything is dialled, so it exits 2.
+		return "", "", core.NewConfigError(
+			fmt.Errorf("grpcx: method %q must be pkg.Service/Method", full))
 	}
 	return full[:i], full[i+1:], nil
+}
+
+// authMetadata maps an auth profile onto gRPC metadata pairs. bearer and apikey
+// have direct equivalents; basic is the HTTP scheme carried in the same
+// `authorization` key, which is what grpcurl and Envoy expect.
+//
+// Without this, a request file saying `auth: main` under `protocol: grpc`
+// validated, resolved, ran — and sent nothing.
+func authMetadata(a *request.AuthProfile) ([]string, error) {
+	if a == nil {
+		return nil, nil
+	}
+	switch a.Type {
+	case "bearer":
+		return []string{"authorization", "Bearer " + a.Token}, nil
+	case "basic":
+		enc := base64.StdEncoding.EncodeToString([]byte(a.Username + ":" + a.Password))
+		return []string{"authorization", "Basic " + enc}, nil
+	case "apikey":
+		if a.Header == "" {
+			return nil, core.NewConfigError(
+				fmt.Errorf("grpcx: auth profile of type apikey requires a header name"))
+		}
+		// Metadata keys are lower-case on the wire; AppendToOutgoingContext would
+		// do this anyway, but doing it here keeps the pairs inspectable.
+		return []string{strings.ToLower(a.Header), a.Key}, nil
+	default:
+		return nil, core.NewConfigError(fmt.Errorf("grpcx: unknown auth type %q", a.Type))
+	}
 }

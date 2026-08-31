@@ -12,6 +12,7 @@ import (
 )
 
 func TestHTTPAdHoc(t *testing.T) {
+	t.Chdir(t.TempDir()) // ad-hoc runs record history; keep it out of the package dir
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("pong"))
 	}))
@@ -29,6 +30,7 @@ func TestHTTPAdHoc(t *testing.T) {
 // Header and query flags need *different* separators. Splitting on ":" first
 // turned `-q next=https://x` into {"next=https": "//x"} — reproduced during review.
 func TestAdHocHeaderAndQueryParsing(t *testing.T) {
+	t.Chdir(t.TempDir())
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer a:b", r.Header.Get("Authorization"))
 		require.Equal(t, "https://cb/x", r.URL.Query().Get("next"))
@@ -86,6 +88,7 @@ func TestAdHocResolvesEnvironmentTemplates(t *testing.T) {
 
 // Ad-hoc mode can authenticate.
 func TestAdHocBearerFlag(t *testing.T) {
+	t.Chdir(t.TempDir())
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
 	}))

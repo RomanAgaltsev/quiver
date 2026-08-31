@@ -32,3 +32,18 @@ func TestApplyMissingPath(t *testing.T) {
 	_, err := Apply([]request.Capture{{Var: "x", From: "body", Path: "nope"}}, resp)
 	require.Error(t, err)
 }
+
+// A header explicitly sent as "" is a value, not an absence. Reporting it as
+// missing made capture disagree with assert about the same response.
+func TestApplyCapturesPresentButEmptyHeader(t *testing.T) {
+	resp := &core.Response{Headers: map[string][]string{"X-Empty": {""}}}
+	got, err := Apply([]request.Capture{{Var: "v", From: "header", Path: "X-Empty"}}, resp)
+	require.NoError(t, err)
+	require.Equal(t, "", got["v"])
+}
+
+func TestApplyMissingHeaderStillFails(t *testing.T) {
+	resp := &core.Response{Headers: map[string][]string{}}
+	_, err := Apply([]request.Capture{{Var: "v", From: "header", Path: "X-Missing"}}, resp)
+	require.Error(t, err)
+}

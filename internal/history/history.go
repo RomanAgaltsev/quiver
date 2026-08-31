@@ -32,17 +32,19 @@ type Record struct {
 // Store is the local history log: an append-only JSONL file under the
 // collection root plus the redactor applied to every record.
 type Store struct {
+	dir  string
 	path string
 	red  *secret.Redactor
 }
 
-// Open returns a Store writing to <dir>/history.jsonl, creating dir if needed.
+// Open returns a Store writing to <dir>/history.jsonl. The directory is created
+// on the first Append, not here: a --dry-run, a `qv env list`, or an ad-hoc call
+// typed in an unrelated repository must not leave state in a directory the user
+// was merely standing in.
+//
 // red may be nil (redact nothing); it is never nil in production.
 func Open(dir string, red *secret.Redactor) (*Store, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("history: mkdir: %w", err)
-	}
-	return &Store{path: filepath.Join(dir, "history.jsonl"), red: red}, nil
+	return &Store{dir: dir, path: filepath.Join(dir, "history.jsonl"), red: red}, nil
 }
 
 // NewID returns a time-sortable identifier: a UTC timestamp prefix plus four
@@ -66,6 +68,9 @@ func (s *Store) Append(rec Record) error {
 		rec.Vars = redacted
 	}
 
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return fmt.Errorf("history: mkdir: %w", err)
+	}
 	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("history: open: %w", err)

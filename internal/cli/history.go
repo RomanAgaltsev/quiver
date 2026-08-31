@@ -20,6 +20,9 @@ func newHistoryCmd() *cobra.Command {
 			if err != nil {
 				return configErr(err)
 			}
+			if rc.History == nil { // --dry-run opens no store
+				return configErr(fmt.Errorf("history is unavailable under --dry-run"))
+			}
 			recs, err := rc.History.List()
 			if err != nil {
 				return err
@@ -47,9 +50,12 @@ func newHistoryCmd() *cobra.Command {
 			if err != nil {
 				return configErr(err)
 			}
+			if rc.History == nil { // --dry-run opens no store
+				return configErr(fmt.Errorf("history is unavailable under --dry-run"))
+			}
 			rec, err := rc.History.Get(args[0])
 			if err != nil {
-				return configErr(err)
+				return classify(err)
 			}
 			// This is only possible because Record now stores the source path.
 			// Re-resolve from disk rather than replaying a frozen request,
@@ -59,7 +65,7 @@ func newHistoryCmd() *cobra.Command {
 			}
 			reqs, err := collection.ListRequests(rec.Path)
 			if err != nil {
-				return configErr(err)
+				return classify(err)
 			}
 			rn := runner.New(rc.Registry, rc.History, rc.RunOpts)
 			defer func() { _ = rn.Close() }()
@@ -72,7 +78,7 @@ func newHistoryCmd() *cobra.Command {
 				}
 			}
 			if code := runner.ExitCode(results); code != 0 {
-				return exitCodeErr(code)
+				return runFailure(code, results)
 			}
 			return nil
 		},

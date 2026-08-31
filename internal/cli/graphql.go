@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"github.com/RomanAgaltsev/quiver/internal/core"
@@ -9,7 +11,7 @@ import (
 
 func newGraphQLCmd() *cobra.Command {
 	var headers []string
-	var query, variables, bearer string
+	var query, variables, bearer, user string
 
 	cmd := &cobra.Command{
 		Use:   "graphql <URL>",
@@ -20,19 +22,26 @@ func newGraphQLCmd() *cobra.Command {
 			if err != nil {
 				return configErr(err)
 			}
+			// request.Validate rejects an empty graphql.query in a saved file, so the
+			// ad-hoc path must too rather than POSTing {"query":""}.
+			if query == "" {
+				return configErr(fmt.Errorf("--query is required (graphql.query is required for saved requests too)"))
+			}
 			hdr, err := splitPairs(headers, ":", "--header")
+			if err != nil {
+				return configErr(err)
+			}
+			auth, err := adhocAuth(bearer, user)
 			if err != nil {
 				return configErr(err)
 			}
 
 			url := args[0]
 			if err := expandAll(rc, &url, &query, &variables); err != nil {
-				return configErr(err)
+				return classify(err)
 			}
-
-			var auth *request.AuthProfile
-			if bearer != "" {
-				auth = &request.AuthProfile{Type: "bearer", Token: bearer}
+			if err := expandMaps(rc, &hdr); err != nil {
+				return classify(err)
 			}
 
 			spec := &request.GraphQLSpec{URL: url, Headers: hdr, Query: query, Variables: variables}
@@ -45,5 +54,8 @@ func newGraphQLCmd() *cobra.Command {
 	cmd.Flags().StringVar(&variables, "variables", "", "variables as JSON")
 	cmd.Flags().StringArrayVarP(&headers, "header", "H", nil, "header \"Key: Value\" (repeatable)")
 	cmd.Flags().StringVar(&bearer, "bearer", "", "bearer token")
+	// Parity with `qv http`: --bearer alone was an arbitrary subset of the auth
+	// profiles the saved form supports.
+	cmd.Flags().StringVarP(&user, "user", "u", "", "basic auth as user:password")
 	return cmd
 }

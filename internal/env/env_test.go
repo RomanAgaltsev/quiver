@@ -13,13 +13,13 @@ import (
 )
 
 func TestExpand(t *testing.T) {
-	got, err := Expand("{{base}}/users/{{id}}", map[string]string{"base": "http://x", "id": "7"})
+	got, err := (&Resolved{Vars: map[string]string{"base": "http://x", "id": "7"}}).Expand("{{base}}/users/{{id}}")
 	require.NoError(t, err)
 	require.Equal(t, "http://x/users/7", got)
 }
 
 func TestExpandMissingVar(t *testing.T) {
-	_, err := Expand("{{nope}}", map[string]string{})
+	_, err := (&Resolved{Vars: map[string]string{}}).Expand("{{nope}}")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "nope")
 }
@@ -28,13 +28,13 @@ func TestExpandMissingVar(t *testing.T) {
 // break the JSON body it is interpolated into.
 func TestExpandJSONFilter(t *testing.T) {
 	vars := map[string]string{"name": `he said "hi"\n`}
-	got, err := Expand(`{"name":{{name | json}}}`, vars)
+	got, err := (&Resolved{Vars: vars}).Expand(`{"name":{{name | json}}}`)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"name":"he said \"hi\"\\n"}`, got)
 }
 
 func TestExpandUnknownFilter(t *testing.T) {
-	_, err := Expand("{{v | base64}}", map[string]string{"v": "x"})
+	_, err := (&Resolved{Vars: map[string]string{"v": "x"}}).Expand("{{v | base64}}")
 	require.Error(t, err)
 }
 

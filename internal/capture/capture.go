@@ -29,8 +29,11 @@ func extract(c request.Capture, resp *core.Response) (string, error) {
 	case "status":
 		return strconv.Itoa(resp.Status), nil
 	case "header":
-		v := resp.HeaderGet(c.Path)
-		if v == "" {
+		// Presence, not emptiness: a header explicitly sent as "" is a value, and
+		// reporting it as missing made capture disagree with assert about the same
+		// response.
+		v, ok := resp.HeaderPresent(c.Path)
+		if !ok {
 			return "", fmt.Errorf("capture %q: header %q not present", c.Var, c.Path)
 		}
 		return v, nil

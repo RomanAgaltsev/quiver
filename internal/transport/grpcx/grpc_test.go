@@ -27,6 +27,15 @@ func (echoServer) Say(ctx context.Context, in *echopb.EchoRequest) (*echopb.Echo
 	}
 	_ = grpc.SetHeader(ctx, metadata.Pairs("x-request-id", "abc"))
 	_ = grpc.SetTrailer(ctx, metadata.Pairs("x-elapsed", "1ms"))
+	// Reflect what the client actually sent, so a test can assert that an auth
+	// profile reached the wire rather than only that the call succeeded.
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		for _, key := range []string{"authorization", "x-api-key"} {
+			if v := md.Get(key); len(v) > 0 {
+				_ = grpc.SetHeader(ctx, metadata.Pairs("x-seen-"+key, v[0]))
+			}
+		}
+	}
 	// Count is deliberately left at its zero value.
 	return &echopb.EchoReply{Msg: "got:" + in.Msg}, nil
 }

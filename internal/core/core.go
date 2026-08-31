@@ -5,10 +5,37 @@ import (
 	"context"
 	"errors"
 	"net/textproto"
+	"reflect"
+	"slices"
 	"time"
 
 	"github.com/RomanAgaltsev/quiver/internal/request"
 )
+
+// ConfigError marks a failure that is the request definition's fault rather
+// than the target's: an unresolved variable, an unknown auth profile, an
+// unreadable body_file, a malformed method name. Spec §8 maps these to exit 2,
+// and CI depends on telling them apart from a genuine run failure — "the API is
+// broken" and "someone typo'd a variable name" must not share an exit code.
+type ConfigError struct{ Err error }
+
+// NewConfigError wraps err as a configuration error. A nil err yields nil so
+// callers can wrap unconditionally.
+func NewConfigError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &ConfigError{Err: err}
+}
+
+func (e *ConfigError) Error() string { return e.Err.Error() }
+func (e *ConfigError) Unwrap() error { return e.Err }
+
+// IsConfigError reports whether err is, or wraps, a ConfigError.
+func IsConfigError(err error) bool {
+	var ce *ConfigError
+	return errors.As(err, &ce)
+}
 
 // Response is normalized across all protocols so that capture, assert,
 // history and render never branch on the protocol.
@@ -32,19 +59,32 @@ type Response struct {
 
 // HeaderGet returns the first value for a header, case-insensitively.
 func (r *Response) HeaderGet(name string) string {
+	v, _ := r.HeaderPresent(name)
+	return v
+}
+
+// HeaderPresent returns the first value for a header and whether it was sent at
+// all. Presence and emptiness are different questions: a header explicitly set
+// to "" is present, and reporting it as absent made `capture` disagree with
+// `assert` about the same response.
+func (r *Response) HeaderPresent(name string) (string, bool) {
 	canonical := textproto.CanonicalMIMEHeaderKey(name)
 	if v, ok := r.Headers[canonical]; ok && len(v) > 0 {
-		return v[0]
+		return v[0], true
 	}
 	for k, v := range r.Headers { // gRPC metadata keys are lowercase, not canonical
 		if textproto.CanonicalMIMEHeaderKey(k) == canonical && len(v) > 0 {
-			return v[0]
+			return v[0], true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // ResolvedRequest is a Request with all templates expanded and auth resolved.
+//
+// There is deliberately no per-request Insecure field: TLS skip-verify is an
+// executor-construction option (--insecure), and carrying an unread flag on the
+// central contract only invites the next author to set it and expect an effect.
 type ResolvedRequest struct {
 	Name     string
 	Protocol request.Protocol
@@ -53,7 +93,6 @@ type ResolvedRequest struct {
 	GraphQL  *request.GraphQLSpec
 	Auth     *request.AuthProfile
 	Timeout  time.Duration // 0 means the executor default
-	Insecure bool          // TLS skip-verify, from --insecure
 }
 
 // Executor sends one resolved request and returns a normalized response.
@@ -83,18 +122,30 @@ type Registry map[request.Protocol]Executor
 
 // Close closes every executor that holds resources, joining any errors. Safe to
 // call when no executor implements Closer.
+//
+// Deduplication is by Closer identity over a slice, not a map[Executor]bool: the
+// same executor may serve several protocols (httpx backs both http and graphql)
+// and must not be closed twice — but ExecutorFunc is a func type, which is
+// unhashable, so using an Executor as a map key panics at runtime on exactly the
+// test seam this package documents.
 func (reg Registry) Close() error {
-	var errs []error
-	seen := make(map[Executor]bool, len(reg))
+	var (
+		errs []error
+		seen []Closer
+	)
 	for _, ex := range reg {
-		if seen[ex] { // the same executor may serve several protocols
+		c, ok := ex.(Closer)
+		if !ok {
 			continue
 		}
-		seen[ex] = true
-		if c, ok := ex.(Closer); ok {
-			if err := c.Close(); err != nil {
-				errs = append(errs, err)
-			}
+		// An uncomparable Closer cannot be deduplicated, but it also cannot be the
+		// same value twice in a map, so closing it is safe.
+		if reflect.TypeOf(c).Comparable() && slices.Contains(seen, c) {
+			continue
+		}
+		seen = append(seen, c)
+		if err := c.Close(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)

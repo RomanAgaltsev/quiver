@@ -10,7 +10,7 @@ import (
 
 func TestRunStatusEq(t *testing.T) {
 	resp := &core.Response{Status: 200, Body: []byte(`{"ok":true}`)}
-	rs, err := Run([]request.Assertion{{From: "status", Op: "eq", Value: "200"}}, resp)
+	rs, err := Run([]request.Assertion{{From: "status", Op: "eq", Value: request.Val("200")}}, resp)
 	require.NoError(t, err)
 	require.True(t, AllPassed(rs))
 }
@@ -19,7 +19,7 @@ func TestRunBodyExistsAndContains(t *testing.T) {
 	resp := &core.Response{Status: 200, Body: []byte(`{"name":"quiver"}`)}
 	rs, err := Run([]request.Assertion{
 		{From: "body", Path: "name", Op: "exists"},
-		{From: "body", Path: "name", Op: "contains", Value: "quiv"},
+		{From: "body", Path: "name", Op: "contains", Value: request.Val("quiv")},
 	}, resp)
 	require.NoError(t, err)
 	require.True(t, AllPassed(rs))
@@ -27,7 +27,7 @@ func TestRunBodyExistsAndContains(t *testing.T) {
 
 func TestRunFails(t *testing.T) {
 	resp := &core.Response{Status: 500}
-	rs, err := Run([]request.Assertion{{From: "status", Op: "eq", Value: "200"}}, resp)
+	rs, err := Run([]request.Assertion{{From: "status", Op: "eq", Value: request.Val("200")}}, resp)
 	require.NoError(t, err)
 	require.False(t, AllPassed(rs))
 }
@@ -63,7 +63,7 @@ func TestNotExists(t *testing.T) {
 
 func TestMatches(t *testing.T) {
 	resp := &core.Response{Status: 200, Body: []byte(`{"id":"user_a1b2"}`)}
-	rs, err := Run([]request.Assertion{{From: "body", Path: "id", Op: "matches", Value: `^user_[a-z0-9]+$`}}, resp)
+	rs, err := Run([]request.Assertion{{From: "body", Path: "id", Op: "matches", Value: request.Val(`^user_[a-z0-9]+$`)}}, resp)
 	require.NoError(t, err)
 	require.True(t, AllPassed(rs))
 }
@@ -73,8 +73,8 @@ func TestMatches(t *testing.T) {
 func TestStatusAcceptsGRPCCodeName(t *testing.T) {
 	resp := &core.Response{Protocol: request.ProtocolGRPC, Status: 0, StatusText: "OK", OK: true}
 	rs, err := Run([]request.Assertion{
-		{From: "status", Op: "eq", Value: "OK"},
-		{From: "status", Op: "eq", Value: "0"},
+		{From: "status", Op: "eq", Value: request.Val("OK")},
+		{From: "status", Op: "eq", Value: request.Val("0")},
 	}, resp)
 	require.NoError(t, err)
 	require.True(t, AllPassed(rs), "%+v", rs)
@@ -87,6 +87,63 @@ func TestHeaderExistence(t *testing.T) {
 		{From: "header", Path: "X-Id", Op: "exists"},
 		{From: "header", Path: "X-Missing", Op: "not_exists"},
 	}, resp)
+	require.NoError(t, err)
+	require.True(t, AllPassed(rs))
+}
+
+// Wiring the gRPC code name into `eq` alone meant `op: ne, value: "OK"` compared
+// "0" against "OK" and silently always passed — asserting the opposite of what
+// was written. Spec §8 accepts both spellings, so every operator must see both.
+func TestStatusNameWorksForEveryOperator(t *testing.T) {
+	resp := &core.Response{Protocol: request.ProtocolGRPC, Status: 0, StatusText: "OK", OK: true}
+	for _, tc := range []struct {
+		op, value string
+		want      bool
+	}{
+		{"eq", "OK", true},
+		{"eq", "0", true},
+		{"eq", "NOT_FOUND", false},
+		{"ne", "OK", false}, // the bug: this used to pass
+		{"ne", "0", false},
+		{"ne", "NOT_FOUND", true},
+		{"contains", "O", true},
+		{"matches", "^OK$", true},
+	} {
+		t.Run(tc.op+" "+tc.value, func(t *testing.T) {
+			rs, err := Run([]request.Assertion{
+				{From: "status", Op: tc.op, Value: request.Val(tc.value)},
+			}, resp)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, rs[0].Passed, "detail: %s", rs[0].Detail)
+		})
+	}
+}
+
+// An HTTP status has only one spelling, so a name never leaks into the
+// comparison for other protocols.
+func TestStatusNameIsGRPCOnly(t *testing.T) {
+	resp := &core.Response{Protocol: request.ProtocolHTTP, Status: 200, StatusText: "200 OK", OK: true}
+	rs, err := Run([]request.Assertion{{From: "status", Op: "eq", Value: request.Val("200 OK")}}, resp)
+	require.NoError(t, err)
+	require.False(t, rs[0].Passed)
+}
+
+// Requiring a non-empty operand made it impossible to assert that a field *is*
+// the empty string, which real APIs return.
+func TestEqAgainstExplicitEmptyValue(t *testing.T) {
+	resp := &core.Response{Status: 200, Body: []byte(`{"error":""}`)}
+	rs, err := Run([]request.Assertion{
+		{Name: "no error", From: "body", Path: "error", Op: "eq", Value: request.Val("")},
+	}, resp)
+	require.NoError(t, err)
+	require.True(t, AllPassed(rs), "%+v", rs)
+}
+
+// A header explicitly sent as "" is present, and assert has always agreed;
+// capture now agrees too.
+func TestHeaderPresentButEmptyExists(t *testing.T) {
+	resp := &core.Response{Headers: map[string][]string{"X-Empty": {""}}}
+	rs, err := Run([]request.Assertion{{From: "header", Path: "X-Empty", Op: "exists"}}, resp)
 	require.NoError(t, err)
 	require.True(t, AllPassed(rs))
 }

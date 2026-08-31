@@ -35,7 +35,13 @@ func newHTTPCmd() *cobra.Command {
 
 			method, url := args[0], args[1]
 			if err := expandAll(rc, &method, &url, &body); err != nil {
-				return configErr(err)
+				return classify(err)
+			}
+			// Headers and query params are arguments too. The single most valuable
+			// ad-hoc use of a variable is a token in a header, and it was the one
+			// case that silently did not expand.
+			if err := expandMaps(rc, &hdr, &qry); err != nil {
+				return classify(err)
 			}
 
 			spec := &request.HTTPSpec{Method: method, URL: url, Headers: hdr, Query: qry, Body: body}

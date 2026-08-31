@@ -6,18 +6,38 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/spf13/cobra"
 )
 
-// Version is overriden at build time via -ldflags
-var Version = "0.0.0-dev"
+// devVersion is the placeholder an unstamped build reports.
+const devVersion = "0.0.0-dev"
+
+// Version is overridden at build time via -ldflags. Prefer version().
+var Version = devVersion
+
+// version reports the build's version. `go install …@latest` — the README's
+// primary install path — links no ldflags, so fall back to the module version
+// the Go toolchain stamps into the binary rather than always claiming 0.0.0-dev
+// and leaving bug reports unable to name a release.
+func version() string {
+	if Version != devVersion {
+		return Version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if v := bi.Main.Version; v != "" && v != "(devel)" {
+			return v
+		}
+	}
+	return Version
+}
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:     "qv",
 		Short:   "Quiver — a CLI-first multi-protocol API client (HTTP, gRPC, GraphQL)",
-		Version: Version,
+		Version: version(),
 		// Q4: usage is for usage errors. A failed request is not a usage error,
 		// and Execute prints the cause itself, exactly once.
 		SilenceUsage:  true,
