@@ -1,0 +1,59 @@
+name: lint
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Windows is here because the formatters normalise to LF: without a
+  # .gitattributes forcing an LF checkout, a Windows clone reports every file as
+  # unformatted. Linting only on ubuntu would hide that from CI entirely.
+  lint-matrix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: repo hygiene
+        # LICENSE was once committed as a 0-byte file and nothing noticed for a
+        # whole milestone: a file that exists but is empty passes every other
+        # check in the repository.
+        shell: bash
+        run: |
+          test -s LICENSE || { echo "LICENSE is empty"; exit 1; }
+          grep -q "Apache License" LICENSE || { echo "LICENSE is not Apache-2.0"; exit 1; }
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # Action v6 supports golangci-lint v1 ONLY — upstream's v7 release note
+      # says "The GitHub Action v7 supports golangci-lint v2 only". Our config is
+      # v2, so v6 + `version: latest` fails outright. v9 is current.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+      - name: tidy check
+        shell: bash
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  # The required status check. The matrix above reports one context per OS, so a
+  # ruleset requiring a bare `lint` would wait on a producer that does not
+  # exist. This job is that producer, and its name does not change when the
+  # matrix does.
+  lint:
+    if: always()
+    needs: [lint-matrix]
+    runs-on: ubuntu-latest
+    steps:
+      # always() means this job runs even when the matrix failed, so it must
+      # fail explicitly. A skipped job reports a skipped check, which does not
+      # block a merge — success by not running, which is the shape of defect
+      # this gate exists to prevent.
+      - if: needs.lint-matrix.result != 'success'
+        run: exit 1

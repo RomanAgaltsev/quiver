@@ -1,0 +1,46 @@
+name: Bug report
+description: Something in qv behaves differently from what it documents.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did qv do, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >-
+        The command you ran, and the request/collection file if there is one.
+        Redact anything secret — or run with the default redaction on and paste
+        that.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: exit-code
+    attributes:
+      label: Exit code
+      description: >-
+        `echo $?` after the command. 0 is success, 1 a run failure, 2 a
+        configuration error — which of the three you got is usually the fastest
+        clue.
+
+  - type: input
+    id: version
+    attributes:
+      label: qv version
+      description: Output of `qv version`.
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and Go version
+      description: e.g. Windows 11 / go1.26.6, or Ubuntu 24.04 / go1.26.6.

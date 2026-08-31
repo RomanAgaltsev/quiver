@@ -1,14 +1,31 @@
 name: release
 on:
-  push:
-    tags: ['v*']
+  push: { branches: [main] }
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
-  goreleaser:
+  # release-please keeps a release PR open, accumulating Conventional Commits
+  # since the last tag. Merging that PR creates the tag, which is what gates the
+  # goreleaser job below — so cutting a release is a deliberate merge rather than
+  # a side effect of a push, and the version in CHANGELOG.md, the tag and the
+  # binary cannot drift apart.
+  release-please:
     runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.rp.outputs.release_created }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: rp
+
+  goreleaser:
+    needs: release-please
+    if: needs.release-please.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -18,7 +35,7 @@ jobs:
           go-version-file: go.mod
       - uses: goreleaser/goreleaser-action@v7
         with:
-          version: '~> v2'
+          version: '~> v2'      # the goreleaser CLI series, not the action's
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

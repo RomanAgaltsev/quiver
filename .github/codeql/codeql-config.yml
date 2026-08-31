@@ -1,0 +1,3 @@
+name: quiver CodeQL config
+queries:
+  - uses: security-extended

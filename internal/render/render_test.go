@@ -214,7 +214,7 @@ func TestDryRunGraphQLAndAuth(t *testing.T) {
 	require.Contains(t, out, "(auth: bearer)")
 }
 
-func TestDryRunRejectsAnUnparseableURL(t *testing.T) {
+func TestDryRunRejectsAnUnparsableURL(t *testing.T) {
 	rr := &core.ResolvedRequest{Name: "x", Protocol: request.ProtocolHTTP,
 		HTTP: &request.HTTPSpec{Method: "GET", URL: "http://[::1]:namedport/"}}
 	require.Error(t, DryRun(&bytes.Buffer{}, rr, opts("pretty")))
@@ -229,7 +229,7 @@ func TestShouldColorHonoursNoColorAndNonFiles(t *testing.T) {
 }
 
 // A string containing an escaped quote must not end the literal early, or the
-// highlighter would mis-classify everything after it.
+// highlighter would misclassify everything after it.
 func TestHighlightHandlesEscapedQuotes(t *testing.T) {
 	resp := sample()
 	resp.Body = []byte(`{"msg":"he said \"hi\"","n":1}`)

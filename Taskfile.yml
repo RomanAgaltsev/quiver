@@ -53,6 +53,16 @@ tasks:
   vuln:
     cmds: ['go run golang.org/x/vuln/cmd/govulncheck@latest ./...']
 
+  ci:
+    desc: >-
+      The local gate, as close to CI as a workstation gets. CI additionally runs
+      -race on three OSes, CodeQL, actionlint, typos and dependency-review.
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test
+      - task: vuln
+
   tidy:
     cmds: ['go mod tidy']
 

@@ -67,7 +67,7 @@ type Request struct {
 	Captures   []Capture    `yaml:"captures,omitempty"`
 	Assertions []Assertion  `yaml:"assertions,omitempty"`
 	// Path is the file this request was loaded from. Not part of the file format.
-	// Set by colection.LoadRequest and needed by history/replay.
+	// Set by collection.LoadRequest and needed by history/replay.
 	Path string `yaml:"-"`
 }
 
