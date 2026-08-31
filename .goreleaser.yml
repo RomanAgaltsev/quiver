@@ -12,7 +12,7 @@ builds:
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ldflags:
-      # Same variable the Taskfile stamps, so `qv version` reports the same
+      # Same variable the Taskfile stamps, so `qv --version` reports the same
       # thing however the binary was produced.
       - -s -w -X github.com/RomanAgaltsev/quiver/internal/cli.Version={{.Version}}
 
