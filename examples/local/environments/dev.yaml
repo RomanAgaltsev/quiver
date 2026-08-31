@@ -1,0 +1,5 @@
+# The hermetic example runs against examples/local/server — no network needed.
+# Both values are overridable with -V, which is how the end-to-end test points
+# the collection at ephemeral ports.
+base: "http://localhost:8080"
+grpc_target: "localhost:50052"

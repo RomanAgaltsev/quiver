@@ -1,0 +1,17 @@
+name: login
+protocol: http
+order: 10
+http:
+  method: POST
+  url: "{{base}}/login"
+  headers:
+    Content-Type: application/json
+  body: '{"user":"ada"}'
+captures:
+  - var: token
+    from: body
+    path: token
+assertions:
+  - from: status
+    op: eq
+    value: "200"

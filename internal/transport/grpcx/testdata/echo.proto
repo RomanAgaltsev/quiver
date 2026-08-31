@@ -1,0 +1,7 @@
+syntax = "proto3";
+package echo;
+option go_package = "github.com/RomanAgaltsev/quiver/internal/transport/grpcx/echopb";
+message EchoRequest { string msg = 1; }
+// a zero-valued field must survive the JSON round-trip.
+message EchoReply { string msg = 1; int32 count = 2; }
+service Echo { rpc Say(EchoRequest) returns (EchoReply); }

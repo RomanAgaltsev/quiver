@@ -1,0 +1,21 @@
+name: search
+protocol: graphql
+order: 30
+graphql:
+  url: "{{base}}/graphql"
+  query: |
+    query Hero {
+      hero { name }
+    }
+assertions:
+  # A GraphQL failure is an HTTP 200 carrying `errors`, so the status alone
+  # proves nothing.
+  - name: no graphql errors
+    from: body
+    path: errors
+    op: not_exists
+  - name: hero resolved
+    from: body
+    path: data.hero.name
+    op: eq
+    value: "R2-D2"

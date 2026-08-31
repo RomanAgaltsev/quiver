@@ -1,0 +1,102 @@
+name: ci
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # cmd/qv has no test files, so `go test ./...` does not prove it compiles.
+      - run: go build ./...
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Q32: the maintainer develops on Windows and this repo has unusually
+        # much path logic (root discovery, tree walking). Linux-only CI would
+        # not exercise it.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod      # no literal version to drift
+      - run: go test -race -shuffle=on ./...
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go test -coverprofile=coverage.out ./...
+      - name: floor on the packages that decide what goes on the wire
+        # env resolves what is sent and render decides what is shown; both were
+        # the least-covered packages and both hid defects because of it.
+        run: |
+          go tool cover -func=coverage.out | tee cover.txt
+          for pkg in env render; do
+            pct=$(awk -v p="internal/$pkg/" '$0 ~ p {gsub("%","",$3); s+=$3; n++} END {if (n) print int(s/n); else print 0}' cover.txt)
+            echo "internal/$pkg: ${pct}%"
+            [ "$pct" -ge 75 ] || { echo "internal/$pkg coverage ${pct}% < 75%"; exit 1; }
+          done
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: repo hygiene
+        # LICENSE was committed as a 0-byte file and nothing noticed for the
+        # whole MVP: a file that exists but is empty passes every other check.
+        run: |
+          test -s LICENSE || { echo "LICENSE is empty"; exit 1; }
+          grep -q "Apache License" LICENSE || { echo "LICENSE is not Apache-2.0"; exit 1; }
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # Action v6 supports golangci-lint v1 ONLY — upstream's v7 release note
+      # says "The GitHub Action v7 supports golangci-lint v2 only". Our config is
+      # v2, so v6 + `version: latest` fails outright. v9 is current.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13
+
+  example:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go build -o qv ./cmd/qv
+      - name: start the hermetic example server
+        run: go run ./examples/local/server & sleep 3
+      - name: run the example collection
+        # The plan's declared acceptance test (Task 17 Step 4). If it is worth
+        # calling that, it is worth a CI job — the collection is also covered by
+        # a Go test, but this proves the documented invocation itself.
+        run: ./qv run examples/local/requests/ --env dev
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # A local govulncheck is blind to toolchain-pin CVEs when the local Go is
+      # newer than the pinned one, so CI is the authoritative run.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

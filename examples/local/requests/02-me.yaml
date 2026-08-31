@@ -1,0 +1,17 @@
+name: me
+protocol: http
+order: 20
+http:
+  method: GET
+  url: "{{base}}/me"
+  headers:
+    Authorization: "Bearer {{token}}"
+assertions:
+  - name: authenticated
+    from: status
+    op: eq
+    value: "200"
+  - name: has a name
+    from: body
+    path: name
+    op: exists

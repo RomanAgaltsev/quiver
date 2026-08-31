@@ -1,0 +1,309 @@
+// Package render formats a response for terminal or machine consumption.
+package render
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
+
+	"github.com/fatih/color"
+	"github.com/mattn/go-isatty"
+
+	"github.com/RomanAgaltsev/quiver/internal/core"
+	"github.com/RomanAgaltsev/quiver/internal/secret"
+)
+
+// Options controls output. Redactor must never be nil in production; a nil
+// Redactor is safe and redacts nothing (used by --show-secrets and by tests).
+type Options struct {
+	Format   string // "pretty" | "raw" | "json"
+	Verbose  bool   // show headers and timings
+	Color    bool   // resolved by ShouldColor
+	Redactor *secret.Redactor
+}
+
+// ShouldColor reports whether to emit ANSI colour: only for a TTY, and never
+// when NO_COLOR is set (https://no-color.org).
+func ShouldColor(w io.Writer) bool {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+	f, ok := w.(*os.File)
+	return ok && isatty.IsTerminal(f.Fd())
+}
+
+// Render writes the response in opts.Format. It is the single output path for
+// every protocol; the redactor is applied here so no format can bypass it.
+func Render(w io.Writer, resp *core.Response, opts Options) error {
+	switch opts.Format {
+	case "raw":
+		_, err := w.Write(opts.Redactor.Bytes(resp.Body))
+		return err
+	case "json":
+		return renderJSON(w, resp, opts)
+	case "pretty":
+		return renderPretty(w, resp, opts)
+	default:
+		return core.NewConfigError(
+			fmt.Errorf("render: unknown format %q (want pretty, raw, or json)", opts.Format))
+	}
+}
+
+func renderJSON(w io.Writer, resp *core.Response, opts Options) error {
+	out := map[string]any{
+		"protocol": string(resp.Protocol),
+		"status":   resp.Status,
+		"ok":       resp.OK,
+		"duration": resp.Duration.String(),
+		"headers":  resp.Headers,
+		"body":     json.RawMessage(bodyOrString(resp.Body)),
+	}
+	if resp.StatusText != "" {
+		out["status_text"] = resp.StatusText
+	}
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		return err
+	}
+	// Redact after encoding so header values and body alike are covered.
+	_, err := w.Write(opts.Redactor.Bytes(buf.Bytes()))
+	return err
+}
+
+func renderPretty(w io.Writer, resp *core.Response, opts Options) error {
+	status := resp.StatusText
+	if status == "" {
+		status = fmt.Sprintf("%d", resp.Status)
+	}
+	statusText := status
+	if opts.Color {
+		c := okColor
+		if !resp.OK {
+			c = failColor
+		}
+		statusText = c.Sprint(status)
+	}
+	if _, err := fmt.Fprintf(w, "%s  (%s)\n", statusText, resp.Duration); err != nil {
+		return err
+	}
+
+	// Headers were previously never shown in pretty output at all, and
+	// -v/--verbose was not implemented anywhere.
+	if opts.Verbose && len(resp.Headers) > 0 {
+		keys := make([]string, 0, len(resp.Headers))
+		for k := range resp.Headers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			line := fmt.Sprintf("%s: %s", k, strings.Join(resp.Headers[k], ", "))
+			if _, err := fmt.Fprintln(w, opts.Redactor.String(line)); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return err
+	}
+
+	var pretty bytes.Buffer
+	if json.Valid(resp.Body) {
+		if err := json.Indent(&pretty, resp.Body, "", "  "); err != nil {
+			return err
+		}
+	} else {
+		pretty.Write(resp.Body)
+	}
+	// Redact before highlighting: the highlighter inserts escape sequences, and a
+	// secret split across one would survive redaction.
+	body := opts.Redactor.Bytes(pretty.Bytes())
+	if opts.Color && json.Valid(resp.Body) {
+		body = highlightJSON(body)
+	}
+	_, err := w.Write(body)
+	return err
+}
+
+// forceColor builds a colour that emits escapes regardless of fatih/color's own
+// global TTY auto-detection. opts.Color is already the decision — ShouldColor
+// made it against the actual output writer — and letting the library
+// second-guess it means colour is wrong whenever the writer is not os.Stdout,
+// and silently untestable.
+func forceColor(attrs ...color.Attribute) *color.Color {
+	c := color.New(attrs...)
+	c.EnableColor()
+	return c
+}
+
+// Colours for highlighted JSON. Keys, strings and scalars are distinguished;
+// punctuation is left alone so the structure still reads as text when copied.
+var (
+	keyColor    = forceColor(color.FgCyan)
+	stringColor = forceColor(color.FgGreen)
+	scalarColor = forceColor(color.FgYellow)
+	okColor     = forceColor(color.FgGreen)
+	failColor   = forceColor(color.FgRed)
+)
+
+// highlightJSON colours an already-indented JSON document. It is a scanner
+// rather than a re-encode so that byte-for-byte layout — which json.Indent has
+// already decided — survives untouched, and so that a body which is valid JSON
+// but not round-trippable through a Go map cannot be reordered.
+func highlightJSON(b []byte) []byte {
+	var out bytes.Buffer
+	out.Grow(len(b) * 2)
+
+	for i := 0; i < len(b); {
+		switch c := b[i]; {
+		case c == '"':
+			end := scanJSONString(b, i)
+			lit := string(b[i:end])
+			// A string immediately followed by a colon is a key.
+			j := end
+			for j < len(b) && (b[j] == ' ' || b[j] == '\t') {
+				j++
+			}
+			if j < len(b) && b[j] == ':' {
+				out.WriteString(keyColor.Sprint(lit))
+			} else {
+				out.WriteString(stringColor.Sprint(lit))
+			}
+			i = end
+		case isScalarStart(c):
+			end := i
+			for end < len(b) && isScalarByte(b[end]) {
+				end++
+			}
+			out.WriteString(scalarColor.Sprint(string(b[i:end])))
+			i = end
+		default:
+			out.WriteByte(c)
+			i++
+		}
+	}
+	return out.Bytes()
+}
+
+// scanJSONString returns the index just past the string literal starting at i.
+func scanJSONString(b []byte, i int) int {
+	i++ // opening quote
+	for i < len(b) {
+		switch b[i] {
+		case '\\':
+			i += 2 // an escape consumes the next byte, quotes included
+			continue
+		case '"':
+			return i + 1
+		}
+		i++
+	}
+	return len(b)
+}
+
+func isScalarStart(c byte) bool {
+	return c == '-' || (c >= '0' && c <= '9') || c == 't' || c == 'f' || c == 'n'
+}
+
+func isScalarByte(c byte) bool {
+	return c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9') ||
+		(c >= 'a' && c <= 'z') || c == 'E'
+}
+
+// DryRun prints the fully resolved request without sending it.
+//
+// Template resolution spans four precedence layers plus chained captures; without
+// this the user has no way to see what would actually be sent. It is redacted for
+// the same reason history is: a resolved auth header is exactly what shows up here.
+func DryRun(w io.Writer, rr *core.ResolvedRequest, opts Options) error {
+	red := opts.Redactor
+	line := func(format string, args ...any) error {
+		_, err := fmt.Fprintln(w, red.String(strings.TrimRight(fmt.Sprintf(format, args...), "\n")))
+		return err
+	}
+
+	writePairs := func(prefix string, h map[string]string) error {
+		keys := make([]string, 0, len(h))
+		for k := range h {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if err := line("%s%s: %s", prefix, k, h[k]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	switch {
+	case rr.HTTP != nil:
+		// The URL with `query:` merged in, not the raw one: a dry run that shows a
+		// different request from the one that would be sent is worse than useless.
+		target, err := rr.HTTP.EffectiveURL()
+		if err != nil {
+			return core.NewConfigError(err)
+		}
+		if err := line("%s %s", strings.ToUpper(rr.HTTP.Method), target); err != nil {
+			return err
+		}
+		if err := writePairs("", rr.HTTP.Headers); err != nil {
+			return err
+		}
+		if rr.HTTP.Body != "" {
+			if err := line("\n%s", rr.HTTP.Body); err != nil {
+				return err
+			}
+		}
+	case rr.GRPC != nil:
+		if err := line("gRPC %s %s", rr.GRPC.Target, rr.GRPC.Method); err != nil {
+			return err
+		}
+		// Prefixed, so metadata is not mistaken for the HTTP headers the previous
+		// revision rendered it identically to.
+		if err := writePairs("metadata ", rr.GRPC.Metadata); err != nil {
+			return err
+		}
+		if rr.GRPC.Message != "" {
+			if err := line("\n%s", rr.GRPC.Message); err != nil {
+				return err
+			}
+		}
+	case rr.GraphQL != nil:
+		if err := line("POST %s", rr.GraphQL.URL); err != nil {
+			return err
+		}
+		if err := writePairs("", rr.GraphQL.Headers); err != nil {
+			return err
+		}
+		if err := line("\n%s", rr.GraphQL.Query); err != nil {
+			return err
+		}
+		if rr.GraphQL.Variables != "" {
+			if err := line("variables: %s", rr.GraphQL.Variables); err != nil {
+				return err
+			}
+		}
+	}
+	if rr.Auth != nil {
+		if err := line("(auth: %s)", rr.Auth.Type); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// bodyOrString returns the body as-is if it is valid JSON, otherwise as a JSON string.
+func bodyOrString(body []byte) []byte {
+	if json.Valid(body) {
+		return body
+	}
+	quoted, _ := json.Marshal(string(body))
+	return quoted
+}

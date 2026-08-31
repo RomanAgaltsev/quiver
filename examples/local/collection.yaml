@@ -1,0 +1,5 @@
+# The hermetic example: everything it talks to is started by
+# `go run ./examples/local/server`, so it needs no network access.
+defaults:
+  base: "http://localhost:8080"
+  grpc_target: "localhost:50052"
