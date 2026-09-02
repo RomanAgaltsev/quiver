@@ -40,6 +40,23 @@ func NewHTTPHandler() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]string{"name": "Ada", "login": "ada"})
 	})
 
+	// /users backs examples/local/load/get-users.yaml. It demands the same
+	// bearer token as /me, so the load example proves the --setup chain really
+	// forwarded a capture rather than merely surviving without one.
+	mux.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+LoginToken {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"users": []map[string]string{
+				{"name": "Ada", "login": "ada"},
+				{"name": "Grace", "login": "grace"},
+			},
+		})
+	})
+
 	mux.HandleFunc("/graphql", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"hero":{"name":"R2-D2"}}}`))

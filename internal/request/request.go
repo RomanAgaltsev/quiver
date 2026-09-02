@@ -30,6 +30,10 @@ type Duration struct {
 // Duration exposes the parsed value of a Timeout field.
 func (dur Duration) Duration() time.Duration { return dur.d }
 
+// NewDuration wraps a time.Duration, for callers building a LoadSpec in code
+// rather than parsing one from YAML.
+func NewDuration(d time.Duration) Duration { return Duration{d: d} }
+
 // UnmarshalYAML uses goccy's InterfaceUnmarshaler form on purpose. The []byte
 // form hands the hook re-serialized YAML *source* for the node: a plain scalar
 // that is not the last line of the document arrives with its trailing newline,
@@ -69,6 +73,8 @@ type Request struct {
 	// Path is the file this request was loaded from. Not part of the file format.
 	// Set by collection.LoadRequest and needed by history/replay.
 	Path string `yaml:"-"`
+
+	Load *LoadSpec `yaml:"load,omitempty"`
 }
 
 // HTTPSpec is the http-protocol request body of a request file.
@@ -235,7 +241,10 @@ func (r *Request) Validate() error {
 	if err := r.validateCaptures(); err != nil {
 		return err
 	}
-	return r.validateAssertions()
+	if err := r.validateAssertions(); err != nil {
+		return err
+	}
+	return r.Load.Validate(r.Name)
 }
 
 func (r *Request) validateProtocolBlock() error {
@@ -317,6 +326,137 @@ func (r *Request) validateAssertions() error {
 				return fmt.Errorf("%s: invalid regex %q: %w", where, a.Operand(), err)
 			}
 		}
+	}
+	return nil
+}
+
+// LoadSpec is the `load:` block: how to drive this request under `qv load`.
+// It is ignored entirely by `qv run`.
+type LoadSpec struct {
+	// Exactly one of Rate, Ramp, Phases selects the rate shape.
+	Rate   float64     `yaml:"rate,omitempty"`
+	Ramp   *RampSpec   `yaml:"ramp,omitempty"`
+	Phases []PhaseSpec `yaml:"phases,omitempty"`
+
+	// At least one of Duration, Requests must bound the run. When both are set,
+	// whichever is reached first ends it.
+	Duration Duration `yaml:"duration,omitempty"`
+	Requests int      `yaml:"requests,omitempty"`
+
+	Concurrency int    `yaml:"concurrency,omitempty"` // max in-flight; 0 == metronome default
+	Pacing      string `yaml:"pacing,omitempty"`      // "open" (default) | "closed"
+
+	// Weight is consulted only when this request is one of several in a folder
+	// target, where it becomes its metronome.Mix weight. Ignored otherwise.
+	Weight int `yaml:"weight,omitempty"`
+
+	// Assertions runs the request's assertions on every iteration. Pointer so
+	// that an absent key means true rather than false.
+	Assertions *bool `yaml:"assertions,omitempty"`
+
+	Thresholds *Thresholds `yaml:"thresholds,omitempty"`
+}
+
+// RampSpec linearly interpolates the rate over the run's duration.
+type RampSpec struct {
+	Start float64 `yaml:"start"`
+	End   float64 `yaml:"end"`
+}
+
+// PhaseSpec is one flat-rate segment.
+type PhaseSpec struct {
+	Duration Duration `yaml:"duration"`
+	Rate     float64  `yaml:"rate"`
+}
+
+// Thresholds are the pass/fail contract for a load run. A zero Duration and a
+// nil pointer both mean "not declared". With none declared a run exits 0,
+// consistent with assertions being the contract for qv run.
+type Thresholds struct {
+	P50 Duration `yaml:"p50,omitempty"`
+	P95 Duration `yaml:"p95,omitempty"`
+	P99 Duration `yaml:"p99,omitempty"`
+
+	CorrectedP50 Duration `yaml:"corrected_p50,omitempty"`
+	CorrectedP95 Duration `yaml:"corrected_p95,omitempty"`
+	CorrectedP99 Duration `yaml:"corrected_p99,omitempty"`
+
+	// ErrorRate and MinRPS are pointers because 0 is a meaningful declared
+	// value, distinct from "not declared".
+	ErrorRate *float64 `yaml:"error_rate,omitempty"`
+	MinRPS    *float64 `yaml:"min_rps,omitempty"`
+
+	// MaxScheduleLag feeds the TRUST verdict (exit 3), not the target verdict
+	// (exit 1): it measures the generator's own lateness, not the target's.
+	MaxScheduleLag Duration `yaml:"max_schedule_lag,omitempty"`
+}
+
+// AssertionsEnabled reports whether per-iteration assertions should run.
+func (l *LoadSpec) AssertionsEnabled() bool {
+	return l == nil || l.Assertions == nil || *l.Assertions
+}
+
+// Validate checks the load profile's internal coherence. Everything here is a
+// config error (exit 2) caught before a single request is sent.
+func (l *LoadSpec) Validate(name string) error {
+	if l == nil {
+		return nil
+	}
+	where := fmt.Sprintf("request %q: load", name)
+
+	shapes := 0
+	if l.Rate != 0 {
+		shapes++
+	}
+	if l.Ramp != nil {
+		shapes++
+	}
+	if len(l.Phases) > 0 {
+		shapes++
+	}
+	if shapes != 1 {
+		return fmt.Errorf("%s: set exactly one of rate, ramp, or phases (got %d)", where, shapes)
+	}
+
+	if l.Rate < 0 {
+		return fmt.Errorf("%s: rate must be positive, got %v", where, l.Rate)
+	}
+	if l.Ramp != nil {
+		if l.Ramp.Start < 0 || l.Ramp.End < 0 {
+			return fmt.Errorf("%s: ramp.start and ramp.end must not be negative", where)
+		}
+		// A Ramp needs a span to interpolate over. A run bounded only by
+		// `requests` has no duration for it to cross, so this is a real error
+		// rather than a defaulted-to-something guess.
+		if l.Duration.Duration() <= 0 {
+			return fmt.Errorf("%s: ramp requires a duration (set load.duration or --duration)", where)
+		}
+	}
+	for i, p := range l.Phases {
+		if p.Duration.Duration() <= 0 {
+			return fmt.Errorf("%s: phases[%d].duration must be positive", where, i)
+		}
+		if p.Rate < 0 {
+			return fmt.Errorf("%s: phases[%d].rate must not be negative", where, i)
+		}
+	}
+
+	if l.Duration.Duration() <= 0 && l.Requests <= 0 {
+		return fmt.Errorf("%s: set duration or requests — an unbounded load run is refused", where)
+	}
+	if l.Requests < 0 {
+		return fmt.Errorf("%s: requests must not be negative", where)
+	}
+	if l.Concurrency < 0 {
+		return fmt.Errorf("%s: concurrency must not be negative", where)
+	}
+	if l.Weight < 0 {
+		return fmt.Errorf("%s: weight must not be negative", where)
+	}
+	switch l.Pacing {
+	case "", "open", "closed":
+	default:
+		return fmt.Errorf("%s: unknown pacing %q (want open or closed)", where, l.Pacing)
 	}
 	return nil
 }

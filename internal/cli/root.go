@@ -60,6 +60,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(
 		newRunCmd(),
+		newLoadCmd(),
 		newHTTPCmd(),
 		newGRPCCmd(),
 		newGraphQLCmd(),
@@ -68,6 +69,7 @@ func newRootCmd() *cobra.Command {
 		newEnvCmd(),
 		newHistoryCmd(),
 	)
+
 	return root
 }
 

@@ -253,3 +253,131 @@ func TestValidateRejectsIncompleteProtocolBlocks(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLoadSpec(t *testing.T) {
+	in := []byte(`
+name: get users
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/users"
+load:
+  rate: 50
+  duration: 30s
+  concurrency: 20
+  pacing: open
+  weight: 3
+  thresholds:
+    p99: 250ms
+    corrected_p99: 500ms
+    error_rate: 0.01
+    min_rps: 45
+    max_schedule_lag: 100ms
+`)
+	r, err := Parse(in)
+	require.NoError(t, err)
+	require.NoError(t, r.Validate())
+
+	require.NotNil(t, r.Load)
+	require.Equal(t, 50.0, r.Load.Rate)
+	require.Equal(t, 30*time.Second, r.Load.Duration.Duration())
+	require.Equal(t, 20, r.Load.Concurrency)
+	require.Equal(t, "open", r.Load.Pacing)
+	require.Equal(t, 3, r.Load.Weight)
+
+	th := r.Load.Thresholds
+	require.NotNil(t, th)
+	require.Equal(t, 250*time.Millisecond, th.P99.Duration())
+	require.Equal(t, 500*time.Millisecond, th.CorrectedP99.Duration())
+	require.NotNil(t, th.ErrorRate)
+	require.InDelta(t, 0.01, *th.ErrorRate, 1e-9)
+	require.NotNil(t, th.MinRPS)
+	require.InDelta(t, 45.0, *th.MinRPS, 1e-9)
+	require.Equal(t, 100*time.Millisecond, th.MaxScheduleLag.Duration())
+}
+
+func TestParseLoadRampAndPhases(t *testing.T) {
+	ramp, err := Parse([]byte("name: r\nprotocol: http\nhttp:\n  method: GET\n  url: http://x\n" +
+		"load:\n  ramp: {start: 10, end: 100}\n  duration: 20s\n"))
+	require.NoError(t, err)
+	require.NotNil(t, ramp.Load.Ramp)
+	require.Equal(t, 10.0, ramp.Load.Ramp.Start)
+	require.Equal(t, 100.0, ramp.Load.Ramp.End)
+
+	phased, err := Parse([]byte("name: p\nprotocol: http\nhttp:\n  method: GET\n  url: http://x\n" +
+		"load:\n  phases:\n    - {duration: 10s, rate: 10}\n    - {duration: 20s, rate: 50}\n"))
+	require.NoError(t, err)
+	require.Len(t, phased.Load.Phases, 2)
+	require.Equal(t, 20*time.Second, phased.Load.Phases[1].Duration.Duration())
+	require.Equal(t, 50.0, phased.Load.Phases[1].Rate)
+}
+
+// An unknown threshold key must be a config error, not a silently ignored
+// setting — same strictness the MVP applies everywhere else.
+func TestParseRejectsUnknownThresholdKey(t *testing.T) {
+	_, err := Parse([]byte("name: x\nprotocol: http\nhttp:\n  method: GET\n  url: http://x\n" +
+		"load:\n  rate: 1\n  duration: 1s\n  thresholds:\n    p98: 10ms\n"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "p98")
+}
+
+// An unset error_rate threshold is different from `error_rate: 0`, which is why
+// it is a pointer. A run with no error_rate declared must not require zero errors.
+func TestThresholdZeroIsDistinctFromUnset(t *testing.T) {
+	unset, err := Parse([]byte("name: x\nprotocol: http\nhttp:\n  method: GET\n  url: http://x\n" +
+		"load:\n  rate: 1\n  duration: 1s\n  thresholds:\n    p99: 10ms\n"))
+	require.NoError(t, err)
+	require.Nil(t, unset.Load.Thresholds.ErrorRate)
+
+	zero, err := Parse([]byte("name: x\nprotocol: http\nhttp:\n  method: GET\n  url: http://x\n" +
+		"load:\n  rate: 1\n  duration: 1s\n  thresholds:\n    error_rate: 0\n"))
+	require.NoError(t, err)
+	require.NotNil(t, zero.Load.Thresholds.ErrorRate)
+	require.Equal(t, 0.0, *zero.Load.Thresholds.ErrorRate)
+}
+
+func TestLoadSpecValidate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		yaml    string
+		wantErr string
+	}{
+		"rate and ramp together": {
+			"load:\n  rate: 10\n  ramp: {start: 1, end: 5}\n  duration: 5s\n", "exactly one"},
+		"ramp without duration": {
+			"load:\n  ramp: {start: 1, end: 5}\n  requests: 100\n", "duration"},
+		"phases without durations": {
+			"load:\n  phases:\n    - {rate: 10}\n  duration: 5s\n", "phases[0].duration"},
+		"no stop condition": {
+			"load:\n  rate: 10\n", "duration or requests"},
+		"negative rate": {
+			"load:\n  rate: -1\n  duration: 5s\n", "rate"},
+		"zero concurrency is fine": {
+			"load:\n  rate: 10\n  duration: 5s\n  concurrency: 0\n", ""},
+		"negative concurrency": {
+			"load:\n  rate: 10\n  duration: 5s\n  concurrency: -2\n", "concurrency"},
+		"bad pacing": {
+			"load:\n  rate: 10\n  duration: 5s\n  pacing: sideways\n", "pacing"},
+		"negative weight": {
+			"load:\n  rate: 10\n  duration: 5s\n  weight: -1\n", "weight"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, err := Parse([]byte("name: x\nprotocol: http\nhttp:\n  method: GET\n  url: http://x\n" + tc.yaml))
+			require.NoError(t, err)
+			err = r.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// A request with no load block is untouched — qv run must not care.
+func TestRequestWithoutLoadBlockIsValid(t *testing.T) {
+	r, err := Parse([]byte("name: x\nprotocol: http\nhttp:\n  method: GET\n  url: http://x\n"))
+	require.NoError(t, err)
+	require.Nil(t, r.Load)
+	require.NoError(t, r.Validate())
+}

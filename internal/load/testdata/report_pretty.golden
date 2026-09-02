@@ -1,0 +1,14 @@
+target      GET https://api.example.com/users
+30s  ·  rate 50/s constant  ·  concurrency 50  ·  pacing open
+
+requests    1500      errors 3 (0.20%)     saturated 0
+achieved    49.8/s    throughput 1.1 MB/s
+
+latency               p50      p95      p99      max
+  raw               12ms     34ms     48ms     91ms
+  corrected         12ms     35ms     52ms        —
+
+schedule lag    max 3ms  (budget 100ms)   OK
+
+[PASS] p99              48ms vs 250ms allowed
+[PASS] error_rate       0.20% (target) vs 1.00% allowed
