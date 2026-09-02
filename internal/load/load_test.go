@@ -140,7 +140,7 @@ func TestExecuteAbortsWhenSetupFails(t *testing.T) {
 // A folder target becomes a weighted Mix; every request appears.
 func TestExecuteFolderTargetUsesWeightedMix(t *testing.T) {
 	var a, b atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/a" {
 			a.Add(1)
 		} else {
@@ -169,7 +169,7 @@ func TestExecuteFolderTargetUsesWeightedMix(t *testing.T) {
 
 // Pacing is asserted under a ManualClock, so no test sleeps for real.
 func TestExecuteUsesInjectedClock(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	defer srv.Close()
 
 	target := &request.Request{Name: "t", Protocol: request.ProtocolHTTP, Path: "t.yaml",
@@ -210,7 +210,7 @@ func TestExecuteUsesInjectedClock(t *testing.T) {
 // Cancelling mid-run must not leak: metronome's contract is that abandoning a
 // live result channel leaks its goroutines for the lifetime of the process.
 func TestExecuteDrainsOnCancellation(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		time.Sleep(5 * time.Millisecond)
 	}))
 	defer srv.Close()

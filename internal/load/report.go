@@ -172,7 +172,7 @@ func (p *progressWriter) tick(snap metronome.Snapshot) {
 	p.lastCount, p.lastErrs = snap.Count, snap.Errors
 
 	rate := float64(dCount) / p.every.Seconds()
-	fmt.Fprintf(p.w, "%6s  %6d reqs  %4d err  %7.1f/s\n",
+	_, _ = fmt.Fprintf(p.w, "%6s  %6d reqs  %4d err  %7.1f/s\n",
 		fmtDuration(p.elapsed), snap.Count, dErrs, rate)
 }
 

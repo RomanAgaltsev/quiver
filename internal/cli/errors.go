@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 
 	asrt "github.com/RomanAgaltsev/quiver/internal/assert"
@@ -84,4 +85,13 @@ func firstFailedAssertion(rs []asrt.Result) string {
 		}
 	}
 	return "assertions failed"
+}
+
+// trustErr marks a run whose measurement cannot be believed — the generator did
+// not keep its own schedule, or the histogram clamped. It is deliberately NOT
+// exit 1: "the target is too slow" and "quiver could not generate the load" are
+// different failures with different fixes, and collapsing them would discard the
+// signal metronome exists to surface.
+func trustErr(msg string) error {
+	return &exitError{code: 3, err: errors.New(msg)}
 }
