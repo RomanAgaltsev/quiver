@@ -30,6 +30,10 @@ type Duration struct {
 // Duration exposes the parsed value of a Timeout field.
 func (dur Duration) Duration() time.Duration { return dur.d }
 
+// NewDuration wraps a time.Duration, for callers building a LoadSpec in code
+// rather than parsing one from YAML.
+func NewDuration(d time.Duration) Duration { return Duration{d: d} }
+
 // UnmarshalYAML uses goccy's InterfaceUnmarshaler form on purpose. The []byte
 // form hands the hook re-serialized YAML *source* for the node: a plain scalar
 // that is not the last line of the document arrives with its trailing newline,
