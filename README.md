@@ -214,6 +214,7 @@ explicit `metadata:` entry of the same key wins over the profile.
 | 0    | every request ran and every assertion passed                                       |
 | 1    | transport failure, failed assertion, or non-OK response with `--check-status`      |
 | 2    | configuration error (unknown env, bad YAML, unresolved variable, unknown auth, …)  |
+| 3    | `qv load` only: the run completed but the measurement is not trustworthy           |
 
 Exit 2 covers everything that is the *definition's* fault and means nothing was
 sent — a malformed request file, an unresolved template, an auth profile that
@@ -240,6 +241,168 @@ on its own):
 | http     | HTTP status code  | 2xx                      |
 | grpc     | numeric gRPC code | code == 0 (`OK`)         |
 | graphql  | HTTP status       | 200 and no `errors` key  |
+
+## Load testing
+
+`qv load` promotes a saved request — or a folder of them — into a load test
+against the same definition. Pacing, worker management and HDR statistics come
+from [metronome](https://github.com/RomanAgaltsev/metronome); quiver supplies
+the request, the thresholds and the exit code.
+
+```sh
+qv load requests/get-users.yaml --rate 200 --duration 30s
+qv load requests/get-users.yaml --rate 200 --requests 5000 --progress
+qv load requests/ --ramp 10:200 --duration 1m        # a folder, as a weighted mix
+```
+
+A run must be bounded: set `duration`, `requests`, or both (whichever is reached
+first ends it). An unbounded load run is refused before anything is sent.
+
+### The `--setup` chain
+
+A load target may not declare `captures:`. Across thousands of concurrent
+iterations there is no coherent answer to which response's captured value wins,
+and silently ignoring the block would let you believe a chain is happening when
+it is not — so it is a hard error, named, before a single request goes out.
+
+Put the chain in a folder and point `--setup` at it instead:
+
+```sh
+qv load requests/get-users.yaml --setup requests/auth/
+```
+
+The setup folder runs **once**, through the same sequential runner `qv run`
+uses — captures, assertions, `order:` and history all behave identically — and
+its captured variables are in scope when the load target resolves. The target
+resolves once, and the resolved request is shared read-only by every worker.
+
+If the setup chain fails, no load is generated and the exit code is 1: those
+requests were sent and the target refused them, which is not a config error.
+
+### The `load:` block
+
+```yaml
+load:
+  rate: 200               # requests per second (constant)
+  ramp: {start: 10, end: 200}   # or: interpolate over the duration
+  phases:                       # or: flat-rate segments
+    - {duration: 30s, rate: 50}
+    - {duration: 30s, rate: 200}
+  duration: 30s           # at least one of duration/requests is required
+  requests: 5000
+  concurrency: 50         # max in flight; 0 uses metronome's default
+  pacing: open            # open (default) | closed
+  weight: 3               # folder targets only: share of the mix
+  assertions: true        # run the request's assertions per iteration (default)
+  thresholds:
+    p50: 20ms
+    p95: 80ms
+    p99: 250ms
+    corrected_p50: 40ms
+    corrected_p95: 150ms
+    corrected_p99: 500ms
+    error_rate: 0.01      # 0..1, the TARGET's rate (see below)
+    min_rps: 180
+    max_schedule_lag: 50ms
+```
+
+Set exactly one of `rate`, `ramp` and `phases`. Every field has a flag that
+overrides it for one run: `--rate`, `--ramp 10:200`, `--duration`, `--requests`,
+`--concurrency`, `--pacing`. The file declares the durable contract; a flag is
+the one-off. A `--ramp` or `--rate` override replaces whatever shape the file
+declared, so "exactly one shape" still holds after the overlay.
+
+In a folder target the run shape comes from the **first** request's `load:`
+block and is shared by all of them; `weight` is the only per-file knob, and it
+becomes that request's share of the mix. `order:` is meaningless under load and
+is ignored — a mix has no sequence.
+
+### Reading the report
+
+```
+requests    6000      errors 3 (0.05%)     saturated 0
+achieved    199.8/s   throughput 1.2 MB/s
+
+latency               p50      p95      p99      max
+  raw                12ms     34ms     48ms     91ms
+  corrected          12ms     35ms     52ms       —
+
+schedule lag    max 3ms  (budget 50ms)   OK
+```
+
+Raw and corrected percentiles are always printed as a **pair**, and are read
+together. Corrected percentiles add the time each unit spent waiting past its
+scheduled send time, answering "what would a client that kept to the schedule
+have seen?" A large gap between the two rows means the generator queued and the
+raw numbers understate what a real client would have suffered.
+
+`errors` and the `error_rate` threshold both exclude **saturation** — open-loop
+units that found no free worker at their scheduled time. Those never reached the
+target, so they belong in neither the numerator nor the denominator; counting
+them would blame the target for the generator running out of workers.
+`saturated` is reported on its own line, and metronome's own raw
+`snapshot.error_rate` (which does include it) is in the JSON output.
+
+`-o json` prints the whole snapshot, both verdict lists and `exit_code` for a CI
+job to consume. Secrets are redacted in both formats.
+
+### Exit codes and trust
+
+| Code | Meaning |
+|------|---------|
+| 0    | every declared threshold passed (with none declared, a run that measured something passes) |
+| 1    | the **target** failed a threshold, or the `--setup` chain failed |
+| 2    | config error — a bad profile, captures on the target, an unresolved variable; nothing was sent |
+| 3    | the run completed but the **measurement** is not trustworthy |
+
+Exit 3 exists because "the target is too slow" and "quiver could not generate
+the load" are different failures with different fixes, and collapsing them would
+throw away the signal metronome exists to surface. When both apply, 3 wins: a
+verdict derived from numbers that do not describe the target is worthless.
+
+Two things trigger it:
+
+- **`schedule_lag`** — the generator fell further behind its own schedule than
+  the budget allows. The budget is `max(25ms, 5 send intervals)` unless
+  `max_schedule_lag` declares one. This is only ever checked under `--pacing
+  open`, where a busy target cannot cause lag: metronome emits a unit that finds
+  no free worker immediately as saturated rather than delaying it, so lag there
+  is the dispatcher, not the target. Under `--pacing closed` a worker does not
+  ask for its next token until the current unit finishes, so lag *is* the target
+  slowing down — absorbed as rate sag and judged by `min_rps` and the corrected
+  percentiles instead.
+
+  Fix it by lowering the rate, raising `--concurrency`, or switching to
+  `--pacing closed`. metronome's open-loop dispatcher tops out in the low
+  thousands of requests per second on one machine. `--allow-lag` downgrades this
+  one verdict to a warning for known-noisy CI runners — it still prints, it just
+  stops being fatal.
+
+- **`histogram_range`** — results exceeded the histogram's 1m ceiling, so
+  `p50`/`p95`/`p99` understate reality and any percentile threshold is an
+  assertion about a number that is not real. `--allow-lag` deliberately does
+  *not* waive this one. Latencies below the 1µs floor are clamped too, but that
+  is harmless and is not reported: the value is recorded *as* the floor, which
+  rounds percentiles up, and it happens on every fast loopback target and on any
+  host whose monotonic clock is coarser than a microsecond.
+
+### Progress
+
+`--progress` prints a line per interval to **stderr**, keeping stdout
+machine-readable; `--progress-interval` sets the cadence (default 1s). It shows
+inter-tick deltas — count, errors, achieved rate — and deliberately no live
+percentiles and no live lag. Every field metronome exposes mid-run is
+cumulative, so a live percentile would be a lifetime figure presented as a
+current one, and one early stall would pin lag red for the rest of the run.
+Those arrive when metronome ships rolling-window stats.
+
+### Dependency pin
+
+metronome is pinned to an **exact** version, not a range. It is pre-v1 and its
+own roadmap states that minor versions may carry breaking changes; a range would
+be a silent upgrade of the thing that decides what the numbers mean. CI has a
+job that fails if the pin drifts or the module stops building from a clean
+module cache.
 
 ## Output
 
@@ -281,6 +444,7 @@ task cover        # coverage report
 task vuln         # govulncheck
 task proto        # regenerate gRPC test fixtures
 task example      # run the hermetic example end to end
+task example:load # run the hermetic load example (server must be up)
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to get started and

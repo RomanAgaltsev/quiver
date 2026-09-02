@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/RomanAgaltsev/metronome"
+	"github.com/fatih/color"
 
 	"github.com/RomanAgaltsev/quiver/internal/secret"
 )
@@ -45,7 +45,7 @@ func writePretty(w io.Writer, r Run, opts ReportOptions) error {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "target      %s\n", r.Target)
-	fmt.Fprintf(&b, "%s  ·  %s\n\n", fmtDuration(r.Profile.Duration), r.Profile.Describe())
+	fmt.Fprintf(&b, "%s  ·  %s\n\n", fmtBound(r.Profile), r.Profile.Describe())
 
 	snap := r.Snapshot
 	fmt.Fprintf(&b, "requests    %-9d errors %d (%.2f%%)     saturated %d\n",
@@ -62,8 +62,11 @@ func writePretty(w io.Writer, r Run, opts ReportOptions) error {
 	fmt.Fprintf(&b, "  corrected     %8s %8s %8s %8s\n\n",
 		ms(snap.CorrectedP50), ms(snap.CorrectedP95), ms(snap.CorrectedP99), "—")
 
+	// Read off the lag itself, not off "any trust verdict failed": a clamped
+	// histogram is not a statement about the schedule, and labelling the lag
+	// line SUSPECT because of one pointed at the wrong number.
 	lagState := "OK"
-	if anyFailed(r.Eval.Trust) {
+	if snap.MaxScheduleLag > r.Profile.LagBudget() {
 		lagState = "SUSPECT"
 	}
 	fmt.Fprintf(&b, "schedule lag    max %s  (budget %s)   %s\n",
@@ -73,14 +76,19 @@ func writePretty(w io.Writer, r Run, opts ReportOptions) error {
 		b.WriteString("\n")
 	}
 	for _, v := range r.Eval.Thresholds {
-		fmt.Fprintf(&b, "[%s] %-16s %s\n", mark(v.Passed), v.Name, v.Detail)
+		fmt.Fprintf(&b, "[%s] %-16s %s\n", mark(v.Passed, opts.Color), v.Name, v.Detail)
 	}
 	for _, v := range r.Eval.Trust {
-		fmt.Fprintf(&b, "[%s] %-16s %s\n", mark(v.Passed), v.Name, v.Detail)
+		fmt.Fprintf(&b, "[%s] %-16s %s\n", mark(v.Passed, opts.Color), v.Name, v.Detail)
 	}
 	if r.Eval.ExitCode == 3 {
 		b.WriteString("\nThe measurement is not trustworthy: these numbers describe the\n" +
-			"generator, not the target. Pass --allow-lag to downgrade this to a warning.\n")
+			"generator, not the target.\n")
+		// --allow-lag waives schedule_lag and nothing else, so offering it for a
+		// clamped histogram would send the reader after a flag that cannot help.
+		if failedNamed(r.Eval.Trust, verdictScheduleLag) {
+			b.WriteString("Pass --allow-lag to downgrade the schedule-lag verdict to a warning.\n")
+		}
 	}
 
 	_, err := io.WriteString(w, red.String(b.String()))
@@ -152,7 +160,6 @@ func verdictsJSON(vs []Verdict) []map[string]any {
 type progressWriter struct {
 	w         io.Writer
 	every     time.Duration
-	started   time.Time
 	lastCount int64
 	lastErrs  int64
 	elapsed   time.Duration
@@ -162,7 +169,7 @@ func newProgressWriter(w io.Writer, every time.Duration) *progressWriter {
 	if every <= 0 {
 		every = time.Second
 	}
-	return &progressWriter{w: w, every: every, started: time.Now()}
+	return &progressWriter{w: w, every: every}
 }
 
 func (p *progressWriter) tick(snap metronome.Snapshot) {
@@ -176,11 +183,39 @@ func (p *progressWriter) tick(snap metronome.Snapshot) {
 		fmtDuration(p.elapsed), snap.Count, dErrs, rate)
 }
 
-func mark(passed bool) string {
-	if passed {
-		return "PASS"
+// failedNamed reports whether a named verdict is present and failing.
+func failedNamed(vs []Verdict, name string) bool {
+	for _, v := range vs {
+		if v.Name == name && !v.Passed {
+			return true
+		}
 	}
-	return "FAIL"
+	return false
+}
+
+// forceColor emits escapes regardless of fatih/color's own TTY auto-detection:
+// ReportOptions.Color is already the decision, made by render.ShouldColor.
+func forceColor(attrs ...color.Attribute) *color.Color {
+	c := color.New(attrs...)
+	c.EnableColor()
+	return c
+}
+
+var (
+	okColor   = forceColor(color.FgGreen)
+	failColor = forceColor(color.FgRed)
+)
+
+func mark(passed, colorize bool) string {
+	label := "FAIL"
+	c := failColor
+	if passed {
+		label, c = "PASS", okColor
+	}
+	if !colorize {
+		return label
+	}
+	return c.Sprint(label)
 }
 
 func ms(d time.Duration) string {
@@ -192,6 +227,20 @@ func ms(d time.Duration) string {
 
 func fmtDuration(d time.Duration) string { return d.Round(time.Second).String() }
 
+// fmtBound describes what actually stopped the run. A requests-bounded profile
+// has no duration, and printing fmtDuration's "0s" claimed a run length the
+// profile never declared.
+func fmtBound(p *Profile) string {
+	switch {
+	case p.Duration > 0 && p.Requests > 0:
+		return fmt.Sprintf("%s or %d requests", fmtDuration(p.Duration), p.Requests)
+	case p.Requests > 0:
+		return fmt.Sprintf("%d requests", p.Requests)
+	default:
+		return fmtDuration(p.Duration)
+	}
+}
+
 func fmtBytesPerSec(bps float64) string {
 	switch {
 	case bps >= 1<<20:
@@ -202,5 +251,3 @@ func fmtBytesPerSec(bps float64) string {
 		return fmt.Sprintf("%.0f B/s", bps)
 	}
 }
-
-var _ = sort.Strings // retained if a future field needs deterministic ordering

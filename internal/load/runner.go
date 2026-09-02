@@ -15,7 +15,7 @@ import (
 )
 
 // executorRunner replays one already-resolved request as a metronome unit of
-// work. It is stateless: sore.ResolvedRequest is read-only for the lifetime os
+// work. It is stateless: core.ResolvedRequest is read-only for the lifetime of
 // a run, so a single value is shared across every worker.
 type executorRunner struct {
 	exec   core.Executor

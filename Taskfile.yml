@@ -72,3 +72,12 @@ tasks:
       - go run ./examples/local/server &
       - sleep 2
       - go run ./cmd/qv run examples/local/requests/ --env dev
+
+  example:load:
+    desc: >-
+      Run the hermetic load example. Assumes the example server is already up
+      (`go run ./examples/local/server &`).
+    cmds:
+      - >-
+        go run ./cmd/qv load examples/local/load/get-users.yaml
+        --setup examples/local/requests/ --env dev

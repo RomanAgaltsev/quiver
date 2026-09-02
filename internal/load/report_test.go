@@ -136,3 +136,60 @@ func TestProgressPrintsDeltasNotLifetimeFigures(t *testing.T) {
 	require.NotContains(t, out, "p99")
 	require.NotContains(t, out, "lag")
 }
+
+// The header states what actually bounded the run. A requests-bounded profile
+// has no duration, and printing a rounded zero claimed a run length the profile
+// never declared.
+func TestPrettyHeaderStatesTheRealStopCondition(t *testing.T) {
+	render := func(p *Profile) string {
+		var buf bytes.Buffer
+		require.NoError(t, WriteReport(&buf, Run{Target: "GET /x", Profile: p,
+			Snapshot: metronome.Snapshot{Count: 1}}, ReportOptions{
+			Format: "pretty", Redactor: secret.NewRedactor(nil)}))
+		return buf.String()
+	}
+
+	out := render(&Profile{Rate: 500, Requests: 100, Pacing: metronome.OpenLoop})
+	require.Contains(t, out, "100 requests")
+	require.NotContains(t, out, "0s  ·")
+
+	out = render(&Profile{Rate: 50, Duration: 30 * time.Second, Pacing: metronome.OpenLoop})
+	require.Contains(t, out, "30s  ·")
+
+	out = render(&Profile{Rate: 50, Duration: 30 * time.Second, Requests: 100, Pacing: metronome.OpenLoop})
+	require.Contains(t, out, "30s or 100 requests")
+}
+
+// The exit-3 footer must not send the reader after a flag that cannot help:
+// --allow-lag waives schedule_lag only, so it is offered only for schedule_lag.
+func TestExitThreeFooterOffersAllowLagOnlyForLag(t *testing.T) {
+	render := func(snap metronome.Snapshot, th request.Thresholds) string {
+		p := &Profile{Rate: 50, Duration: time.Second, Pacing: metronome.OpenLoop, Thresholds: th}
+		var buf bytes.Buffer
+		require.NoError(t, WriteReport(&buf, Run{Target: "GET /x", Profile: p, Snapshot: snap,
+			Eval: Evaluate(snap, p)}, ReportOptions{
+			Format: "pretty", Redactor: secret.NewRedactor(nil)}))
+		return buf.String()
+	}
+
+	lag := render(metronome.Snapshot{Count: 100, MaxScheduleLag: 800 * time.Millisecond}, request.Thresholds{})
+	require.Contains(t, lag, "not trustworthy")
+	require.Contains(t, lag, "--allow-lag")
+
+	clamped := render(metronome.Snapshot{Count: 100, Clamped: 4, Max: 90 * time.Second},
+		request.Thresholds{P99: secs(time.Second)})
+	require.Contains(t, clamped, "not trustworthy")
+	require.NotContains(t, clamped, "--allow-lag")
+}
+
+// Colour is a real option, not an accepted-and-ignored one.
+func TestPrettyReportHonoursTheColorOption(t *testing.T) {
+	r := sampleRun()
+	var plain, coloured bytes.Buffer
+	require.NoError(t, WriteReport(&plain, r, ReportOptions{Format: "pretty", Redactor: secret.NewRedactor(nil)}))
+	require.NoError(t, WriteReport(&coloured, r, ReportOptions{Format: "pretty", Color: true, Redactor: secret.NewRedactor(nil)}))
+
+	require.NotContains(t, plain.String(), "\x1b[")
+	require.Contains(t, coloured.String(), "\x1b[")
+	require.Contains(t, coloured.String(), "PASS")
+}

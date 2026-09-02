@@ -2,6 +2,7 @@ package load
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -31,6 +32,24 @@ type Options struct {
 	Progress         io.Writer       // nil == disabled
 	ProgressInterval time.Duration   // 0 == 1s
 }
+
+// The histogram range every load run records into. These are metronome's own
+// NewStats defaults, spelled out here because they are not just a constructor
+// argument: Evaluate has to know where the bounds are to tell a clamp at the
+// top (which makes a percentile understate reality) from a clamp at the bottom
+// (which cannot). Passing them explicitly keeps the two in step.
+const (
+	statsLow     = time.Microsecond
+	statsHigh    = time.Minute
+	statsSigfigs = 3
+)
+
+// ErrSetup marks a failure of the --setup chain. Callers need it to tell the
+// two pre-load failures apart: a bad definition sends nothing and is exit 2,
+// whereas a setup chain that ran and was refused did reach the target and is
+// exit 1. Collapsing them would have exit 2 claim "nothing was sent" about a
+// run that had already authenticated against a real system.
+var ErrSetup = errors.New("setup chain failed")
 
 // ValidateTargets rejects any target that cannot be meaningfully load-tested.
 //
@@ -103,14 +122,14 @@ func runSetup(ctx context.Context, opts Options, vars *env.Resolved) error {
 
 	for _, res := range results {
 		if res.Err != nil {
-			return fmt.Errorf("setup %q: %w", res.Name, res.Err)
+			return fmt.Errorf("%w: setup %q: %w", ErrSetup, res.Name, res.Err)
 		}
 		for k, v := range res.Captured {
 			vars.Vars[k] = v
 		}
 	}
 	if code := runner.ExitCode(results); code != 0 {
-		return fmt.Errorf("setup chain failed its assertions; no load was generated")
+		return fmt.Errorf("%w: its assertions did not pass; no load was generated", ErrSetup)
 	}
 	return nil
 }
@@ -189,7 +208,7 @@ func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Sna
 		Clock:       opts.Clock, // nil is fine: the Driver falls back to SystemClock
 	}
 
-	stats := metronome.NewStats()
+	stats := metronome.NewStatsRange(statsLow, statsHigh, statsSigfigs)
 	results := d.Run(ctx)
 
 	if opts.Progress == nil {

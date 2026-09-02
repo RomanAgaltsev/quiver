@@ -104,3 +104,42 @@ jobs:
         # The plan's declared acceptance test. The collection is also covered by
         # a Go test; this proves the documented invocation itself still works.
         run: ./qv run examples/local/requests/ --env dev
+      - name: run the load example
+        # The load plan's declared acceptance test: the setup chain runs once,
+        # 1,000 requests are driven at 200/s, and both thresholds pass.
+        # --allow-lag because schedule lag is a property of the runner, not of
+        # the example; the verdict still prints, and every other trust check
+        # stays fatal.
+        run: ./qv load examples/local/load/get-users.yaml --setup examples/local/requests/ --env dev --allow-lag
+      - name: the trust exit code is reachable
+        # A gate that cannot demonstrate its own failure mode is not a gate.
+        # metronome's open-loop dispatcher tops out in the low thousands of rps,
+        # so asking for 100,000 must produce a schedule_lag verdict and exit 3.
+        run: |
+          set +e
+          ./qv load examples/local/load/get-users.yaml --setup examples/local/requests/ \
+            --env dev --rate 100000 --duration 3s
+          code=$?
+          set -e
+          echo "exit: $code"
+          test "$code" = "3" || { echo "expected exit 3, got $code"; exit 1; }
+
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # metronome is pre-v1: its minor versions may carry breaking changes, so
+      # the pin must stay exact. A drift to a range would be a silent upgrade of
+      # the dependency that decides what quiver's numbers mean.
+      - name: metronome pin is exact
+        run: |
+          got=$(go list -m -f '{{.Version}}' github.com/RomanAgaltsev/metronome)
+          echo "metronome: $got"
+          test "$got" = "v0.4.0" || { echo "expected v0.4.0"; exit 1; }
+      - name: builds from a clean module cache
+        run: |
+          go clean -modcache
+          go build ./...

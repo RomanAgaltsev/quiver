@@ -1,0 +1,20 @@
+name: get users under load
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/users"
+  headers:
+    Authorization: "Bearer {{token}}"
+assertions:
+  - name: ok
+    from: status
+    op: eq
+    value: "200"
+load:
+  rate: 200
+  duration: 5s
+  concurrency: 20
+  pacing: open
+  thresholds:
+    p99: 100ms
+    error_rate: 0.01

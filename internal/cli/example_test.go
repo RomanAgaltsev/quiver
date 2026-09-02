@@ -114,3 +114,62 @@ func TestShippedExampleFailsWhenTheChainBreaks(t *testing.T) {
 	require.Equal(t, 1, code)
 	require.Contains(t, errOut, "[FAIL] authenticated")
 }
+
+// The shipped load example is held to the same standard as the shipped
+// collection: something must run it. `qv load` has its own report, its own exit
+// codes and its own resolve-once path, so a load example nobody executes rots in
+// a way the `qv run` end-to-end test cannot notice — and it shipped broken once
+// already, pointed at a /users endpoint the example server did not serve.
+//
+// --allow-lag is deliberate: schedule lag is a property of the machine running
+// the test, not of the example, and a busy CI runner must not turn this into a
+// flake. Every other verdict stays fatal.
+func TestShippedLoadExampleRuns(t *testing.T) {
+	httpSrv := httptest.NewServer(app.NewHTTPHandler())
+	defer httpSrv.Close()
+
+	collectionDir := copyExampleCollection(t)
+
+	out, errOut, code := run(t,
+		"load", filepath.Join(collectionDir, "load", "get-users.yaml"),
+		"--collection", collectionDir,
+		"--env", "dev",
+		"-V", "base="+httpSrv.URL,
+		"--setup", filepath.Join(collectionDir, "requests", "01-login.yaml"),
+		"--rate", "500", "--requests", "100", "--allow-lag")
+
+	require.Equal(t, 0, code, "stdout:\n%s\nstderr:\n%s", out, errOut)
+	require.Contains(t, out, "[PASS] p99")
+	require.Contains(t, out, "[PASS] error_rate")
+	// Raw and corrected percentiles are read as a pair; the report must never
+	// print one without the other.
+	require.Contains(t, out, "raw")
+	require.Contains(t, out, "corrected")
+	require.Contains(t, out, "100 requests", "the header must state the real stop condition")
+}
+
+// The load example must also fail honestly, and say why on stderr. With a bad
+// token every response is a 401, so the declared error_rate threshold has to
+// fail with exit 1 — and the reason has to be readable: this path once printed
+// a formatter panic instead of a message, because the exitError was built
+// around an error that was always nil.
+func TestShippedLoadExampleFailsThresholdWithAReadableReason(t *testing.T) {
+	httpSrv := httptest.NewServer(app.NewHTTPHandler())
+	defer httpSrv.Close()
+
+	collectionDir := copyExampleCollection(t)
+
+	out, errOut, code := run(t,
+		"load", filepath.Join(collectionDir, "load", "get-users.yaml"),
+		"--collection", collectionDir,
+		"--env", "dev",
+		"-V", "base="+httpSrv.URL,
+		"-V", "token=wrong",
+		"--rate", "500", "--requests", "50", "--allow-lag")
+
+	require.Equal(t, 1, code, "stdout:\n%s\nstderr:\n%s", out, errOut)
+	require.Contains(t, out, "[FAIL] error_rate")
+	require.Contains(t, errOut, "threshold failed")
+	require.Contains(t, errOut, "error_rate")
+	require.NotContains(t, errOut, "PANIC")
+}

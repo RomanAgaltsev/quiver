@@ -72,7 +72,7 @@ func Evaluate(snap metronome.Snapshot, p *Profile) Evaluation {
 	switch {
 	// Trust wins: if the numbers cannot be believed, neither can a verdict
 	// derived from them.
-	case anyFailed(e.Trust) && !p.AllowLag:
+	case anyFatalTrustFailure(e.Trust, p.AllowLag):
 		e.ExitCode = 3
 	case anyFailed(e.Thresholds):
 		e.ExitCode = 1
@@ -114,40 +114,76 @@ func trustVerdicts(snap metronome.Snapshot, p *Profile) []Verdict {
 		})
 	}
 
-	// Lag WITHOUT saturation is metronome failing to keep its own schedule, so
-	// the latency numbers describe quiver rather than the target. Lag WITH
-	// saturation means the target could not keep up, which is a target result
-	// the thresholds already judge.
+	// Whether schedule lag indicts the generator or the target is decided by the
+	// pacing mode, not by the saturation count.
+	//
+	// In OpenLoop a unit that finds no free worker is emitted immediately as an
+	// ErrSaturated Result — metronome's dispatcher never delays it. A busy
+	// target therefore cannot produce schedule lag at all: lag there is the
+	// pacer failing to keep the schedule it offered, which is quiver's problem
+	// whatever Saturated says. metronome's open-loop dispatcher has a ceiling of
+	// a few thousand rps, and a load test can walk straight into it.
+	//
+	// In ClosedLoop the opposite holds by construction: a worker does not ask
+	// for its next token until the current unit completes, so a slow target IS
+	// the lag, absorbed as rate sag — a target result the thresholds already
+	// judge through min_rps and the corrected percentiles.
+	//
+	// Keying this on `Saturated == 0` got it backwards at both ends. It silenced
+	// the check in OpenLoop, where lag means the generator, as soon as a single
+	// unit saturated — 28 saturated out of 10,504 was enough to hide a 2.9s lag
+	// against a 25ms budget. And it armed the check in ClosedLoop, where
+	// Saturated is documented to be always zero and lag means the target.
 	budget := p.LagBudget()
-	if snap.MaxScheduleLag > budget && snap.Saturated == 0 {
+	if p.Pacing == metronome.OpenLoop && snap.MaxScheduleLag > budget {
 		out = append(out, Verdict{
-			Name:   "schedule_lag",
+			Name:   verdictScheduleLag,
 			Passed: false,
 			Detail: fmt.Sprintf(
-				"generator fell %s behind its schedule (budget %s) with no saturation — "+
+				"generator fell %s behind its schedule (budget %s) — "+
 					"lower the rate, raise --concurrency, or use --pacing closed",
 				snap.MaxScheduleLag.Round(time.Millisecond), budget),
 		})
 	}
 
-	// A clamped histogram understates the percentiles, so asserting on them is
-	// asserting on a number that is not real.
-	if snap.Clamped > 0 && hasRawLatencyThreshold(p.Thresholds) {
+	// A clamped histogram understates the percentiles ONLY when it clamped at
+	// the TOP. metronome counts both ends in one Clamped counter, but the two
+	// ends are not symmetric: a latency below the floor is recorded AS the
+	// floor, which rounds a percentile up and so can never let a "must be under
+	// X" threshold pass when it should have failed. Clamping at the ceiling is
+	// the dangerous one, because then p99 reads 1m for a request that took an
+	// hour.
+	//
+	// The distinction is not academic. Low-side clamping is the normal case for
+	// a fast local target — and unavoidable on a host whose monotonic clock is
+	// coarser than a microsecond, such as Windows at ~0.5ms, where nearly every
+	// loopback result measures zero. Treating that as a trust failure made
+	// exit 3 the routine outcome of a perfectly healthy run.
+	//
+	// Snapshot.Max is documented to be the true maximum regardless of clamping,
+	// so it is the honest test for whether the ceiling was ever reached.
+	if snap.Clamped > 0 && snap.Max > statsHigh && hasRawLatencyThreshold(p.Thresholds) {
 		out = append(out, Verdict{
 			Name:   "histogram_range",
 			Passed: false,
 			Detail: fmt.Sprintf(
-				"%d result(s) fell outside the histogram range, so p50/p95/p99 understate reality",
-				snap.Clamped),
+				"%d result(s) exceeded the %s histogram ceiling (max was %s), "+
+					"so p50/p95/p99 understate reality",
+				snap.Clamped, statsHigh, snap.Max.Round(time.Millisecond)),
 		})
 	}
-	if snap.CorrectedClamped > 0 && hasCorrectedLatencyThreshold(p.Thresholds) {
+	// A corrected value is a latency plus its queueing delay, so Max plus the
+	// largest observed lag bounds every one of them: under that, nothing can
+	// have clamped at the ceiling.
+	if snap.CorrectedClamped > 0 && snap.Max+snap.MaxScheduleLag > statsHigh &&
+		hasCorrectedLatencyThreshold(p.Thresholds) {
 		out = append(out, Verdict{
 			Name:   "corrected_histogram_range",
 			Passed: false,
 			Detail: fmt.Sprintf(
-				"%d corrected result(s) were clamped, so corrected_p* understate reality",
-				snap.CorrectedClamped),
+				"%d corrected result(s) exceeded the %s histogram ceiling, "+
+					"so corrected_p* understate reality",
+				snap.CorrectedClamped, statsHigh),
 		})
 	}
 	return out
@@ -167,6 +203,30 @@ func latencyVerdict(name string, got, want time.Duration) Verdict {
 		Passed: got <= want,
 		Detail: fmt.Sprintf("%s vs %s allowed", got.Round(time.Microsecond), want),
 	}
+}
+
+// verdictScheduleLag names the one trust verdict --allow-lag may waive.
+const verdictScheduleLag = "schedule_lag"
+
+// anyFatalTrustFailure reports whether a trust verdict should force exit 3.
+//
+// --allow-lag waives ONLY schedule_lag, which is what its help text promises
+// and the only failure a noisy CI runner can cause on its own. A clamped
+// histogram or a run that recorded nothing are statements about the numbers
+// themselves — waiving those would let --allow-lag turn "these percentiles are
+// not real" into a silent exit 0, which is precisely the signal this package
+// exists to preserve.
+func anyFatalTrustFailure(vs []Verdict, allowLag bool) bool {
+	for _, v := range vs {
+		if v.Passed {
+			continue
+		}
+		if allowLag && v.Name == verdictScheduleLag {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func anyFailed(vs []Verdict) bool {

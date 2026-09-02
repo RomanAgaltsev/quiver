@@ -330,7 +330,7 @@ func (r *Request) validateAssertions() error {
 	return nil
 }
 
-// LoadSpec ia the `load:` block: how to drive this request under `qv load`.
+// LoadSpec is the `load:` block: how to drive this request under `qv load`.
 // It is ignored entirely by `qv run`.
 type LoadSpec struct {
 	// Exactly one of Rate, Ramp, Phases selects the rate shape.
@@ -338,7 +338,7 @@ type LoadSpec struct {
 	Ramp   *RampSpec   `yaml:"ramp,omitempty"`
 	Phases []PhaseSpec `yaml:"phases,omitempty"`
 
-	// At least one of Duration, Request must bound the run. When both are set,
+	// At least one of Duration, Requests must bound the run. When both are set,
 	// whichever is reached first ends it.
 	Duration Duration `yaml:"duration,omitempty"`
 	Requests int      `yaml:"requests,omitempty"`
@@ -346,7 +346,7 @@ type LoadSpec struct {
 	Concurrency int    `yaml:"concurrency,omitempty"` // max in-flight; 0 == metronome default
 	Pacing      string `yaml:"pacing,omitempty"`      // "open" (default) | "closed"
 
-	// Weight is the only consulted when this request is one of several in a folder
+	// Weight is consulted only when this request is one of several in a folder
 	// target, where it becomes its metronome.Mix weight. Ignored otherwise.
 	Weight int `yaml:"weight,omitempty"`
 
@@ -381,7 +381,7 @@ type Thresholds struct {
 	CorrectedP95 Duration `yaml:"corrected_p95,omitempty"`
 	CorrectedP99 Duration `yaml:"corrected_p99,omitempty"`
 
-	// ErorrRate and MinRPS are pointers because 0 is a meaningful declared
+	// ErrorRate and MinRPS are pointers because 0 is a meaningful declared
 	// value, distinct from "not declared".
 	ErrorRate *float64 `yaml:"error_rate,omitempty"`
 	MinRPS    *float64 `yaml:"min_rps,omitempty"`

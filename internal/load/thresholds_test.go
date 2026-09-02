@@ -102,11 +102,32 @@ func TestGeneratorLagWithoutSaturationIsATrustFailure(t *testing.T) {
 	require.Contains(t, e.Trust[0].Detail, "800ms")
 }
 
-// Lag WITH saturation means the target could not keep up — a target result,
-// which the thresholds already judge. Not a trust failure.
-func TestLagWithSaturationIsNotATrustFailure(t *testing.T) {
-	snap := metronome.Snapshot{Count: 1000, MaxScheduleLag: 800 * time.Millisecond, Saturated: 40}
+// In OpenLoop, saturation does not excuse lag. metronome's open-loop dispatcher
+// emits a unit that finds no free worker immediately as ErrSaturated rather
+// than delaying it, so a busy target cannot be the cause of schedule lag in
+// this mode — the pacer is. Suppressing the verdict whenever Saturated was
+// non-zero let one saturated unit in ten thousand hide a lag two orders of
+// magnitude over budget.
+func TestOpenLoopLagIsATrustFailureEvenWithSaturation(t *testing.T) {
+	snap := metronome.Snapshot{Count: 10504, MaxScheduleLag: 2894 * time.Millisecond, Saturated: 28}
 	e := Evaluate(snap, profileWith(request.Thresholds{}))
+	require.Equal(t, 3, e.ExitCode)
+	require.Len(t, e.Trust, 1)
+	require.Equal(t, "schedule_lag", e.Trust[0].Name)
+}
+
+// ClosedLoop is the other half of the same rule. There a worker does not ask
+// for its next token until the current unit completes, so a slow target IS the
+// lag — absorbed as rate sag, and judged by min_rps and the corrected
+// percentiles rather than by a trust verdict. Snapshot.Saturated is documented
+// to be always zero in this mode, which is why the old `Saturated == 0` guard
+// armed the check here, of all places.
+func TestClosedLoopLagIsNotATrustFailure(t *testing.T) {
+	p := profileWith(request.Thresholds{})
+	p.Pacing = metronome.ClosedLoop
+	snap := metronome.Snapshot{Count: 1000, MaxScheduleLag: 30 * time.Second, Saturated: 0}
+
+	e := Evaluate(snap, p)
 	require.Equal(t, 0, e.ExitCode)
 	require.Empty(t, e.Trust)
 }
@@ -120,7 +141,14 @@ func TestLagWithinBudgetPasses(t *testing.T) {
 // TRUST 2. A clamped histogram means the percentiles understate reality, so a
 // percentile assertion is an assertion on a number that is not real.
 func TestClampedHistogramInvalidatesPercentileThresholds(t *testing.T) {
-	snap := metronome.Snapshot{Count: 1000, P99: 40 * time.Millisecond, Clamped: 7}
+	// Max above the histogram ceiling is what makes the clamping high-side, and
+	// therefore what makes the percentiles understate reality. Max is documented
+	// to be the true maximum whether or not the histogram clamped, so it is the
+	// only field that can tell the two ends apart.
+	snap := metronome.Snapshot{
+		Count: 1000, P99: 40 * time.Millisecond, Clamped: 7,
+		Max: 90 * time.Second,
+	}
 
 	// Declared raw percentile threshold -> trust failure.
 	e := Evaluate(snap, profileWith(request.Thresholds{P99: secs(250 * time.Millisecond)}))
@@ -132,14 +160,46 @@ func TestClampedHistogramInvalidatesPercentileThresholds(t *testing.T) {
 	require.Equal(t, 0, e.ExitCode)
 }
 
-func TestCorrectedClampingOnlyAffectsCorrectedThresholds(t *testing.T) {
-	snap := metronome.Snapshot{Count: 1000, CorrectedP99: 40 * time.Millisecond, CorrectedClamped: 3}
+// Clamping at the BOTTOM of the histogram is routine and harmless: the value is
+// recorded as the floor, so the percentiles round up and a "must be under X"
+// threshold cannot pass when it should have failed. A fast loopback target
+// produces it constantly, and on a host whose monotonic clock is coarser than a
+// microsecond — Windows, at roughly half a millisecond — nearly every result
+// clamps this way. Failing on it made exit 3 the normal outcome of a healthy
+// run, and made the shipped load example unrunnable.
+func TestLowSideClampingIsNotATrustFailure(t *testing.T) {
+	snap := metronome.Snapshot{
+		Count: 1000, P50: time.Microsecond, P99: time.Millisecond,
+		Clamped: 990, CorrectedClamped: 990,
+		Max: 2 * time.Millisecond, // nowhere near the ceiling
+	}
+	e := Evaluate(snap, profileWith(request.Thresholds{
+		P99:          secs(100 * time.Millisecond),
+		CorrectedP99: secs(100 * time.Millisecond),
+	}))
+	require.Equal(t, 0, e.ExitCode)
+	require.Empty(t, e.Trust)
+}
 
-	e := Evaluate(snap, profileWith(request.Thresholds{CorrectedP99: secs(time.Second)}))
+func TestCorrectedClampingOnlyAffectsCorrectedThresholds(t *testing.T) {
+	// A corrected value is a latency plus its queueing delay, so it is Max plus
+	// the largest lag that has to clear the ceiling — which it does here while
+	// the raw Max alone stays under it, exactly the "CorrectedClamped > 0 with
+	// Clamped == 0" case metronome documents. The declared max_schedule_lag is
+	// generous enough to cover the lag, so this test is about clamping alone.
+	snap := metronome.Snapshot{
+		Count: 1000, CorrectedP99: 40 * time.Millisecond, CorrectedClamped: 3,
+		Max: 59 * time.Second, MaxScheduleLag: 5 * time.Second,
+	}
+	lagBudget := secs(10 * time.Second)
+
+	e := Evaluate(snap, profileWith(request.Thresholds{
+		CorrectedP99: secs(time.Second), MaxScheduleLag: lagBudget}))
 	require.Equal(t, 3, e.ExitCode)
 
 	// A raw threshold is unaffected by corrected clamping.
-	e = Evaluate(snap, profileWith(request.Thresholds{P99: secs(time.Second)}))
+	e = Evaluate(snap, profileWith(request.Thresholds{
+		P99: secs(time.Second), MaxScheduleLag: lagBudget}))
 	require.Equal(t, 0, e.ExitCode)
 }
 
@@ -172,4 +232,32 @@ func TestZeroResultsIsATrustFailure(t *testing.T) {
 	e := Evaluate(metronome.Snapshot{}, profileWith(request.Thresholds{}))
 	require.Equal(t, 3, e.ExitCode)
 	require.Contains(t, e.Trust[0].Detail, "no results")
+}
+
+// --allow-lag waives schedule_lag and nothing else. Its help text promises a
+// "generator-lag" waiver, and a noisy CI runner is the only thing it exists to
+// absorb; letting it also swallow "the histogram clamped" or "nothing was
+// recorded" would turn the flag into a blanket --ignore-trust and hand back an
+// exit 0 for numbers quiver has just said are not real.
+func TestAllowLagDoesNotWaiveNonLagTrustFailures(t *testing.T) {
+	p := profileWith(request.Thresholds{P99: secs(time.Second)})
+	p.AllowLag = true
+
+	// A clamped ceiling still invalidates the percentiles.
+	e := Evaluate(metronome.Snapshot{
+		Count: 1000, Clamped: 5, Max: 90 * time.Second,
+	}, p)
+	require.Equal(t, 3, e.ExitCode)
+
+	// A run that recorded nothing is still not a pass.
+	e = Evaluate(metronome.Snapshot{}, p)
+	require.Equal(t, 3, e.ExitCode)
+
+	// And the lag verdict it IS meant to waive still gets waived, even when it
+	// arrives alongside a passing threshold.
+	e = Evaluate(metronome.Snapshot{
+		Count: 1000, MaxScheduleLag: 800 * time.Millisecond,
+	}, p)
+	require.Equal(t, 0, e.ExitCode)
+	require.NotEmpty(t, e.Trust, "still reported, just not fatal")
 }

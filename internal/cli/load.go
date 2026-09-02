@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/RomanAgaltsev/quiver/internal/collection"
@@ -93,12 +95,26 @@ func newLoadCmd() *cobra.Command {
 
 			run, err := load.Execute(cmd.Context(), opts)
 			if err != nil {
+				// A --setup failure is not a config error: those requests were
+				// sent and the target refused them, so it is exit 1. Exit 2
+				// promises nothing reached the system under test.
+				if errors.Is(err, load.ErrSetup) {
+					return runErr(err)
+				}
 				return configErr(err)
 			}
 
 			format, _ := cmd.Flags().GetString("output")
-			if format == "pretty" || format == "raw" {
+			switch format {
+			case "", "pretty", "raw":
 				format = "pretty" // load has no "raw" shape
+			case "json":
+			default:
+				// Rejected here rather than inside WriteReport so an unsupported
+				// format is exit 2 (the invocation is wrong) while a genuine
+				// write failure below stays exit 1.
+				return configErr(fmt.Errorf(
+					"--output %q is not supported by qv load (want pretty or json)", format))
 			}
 			if err := load.WriteReport(cmd.OutOrStdout(), run, load.ReportOptions{
 				Format:   format,
@@ -114,7 +130,10 @@ func newLoadCmd() *cobra.Command {
 			case 3:
 				return trustErr("the measurement is not trustworthy; see the report above")
 			default:
-				return &exitError{code: run.Eval.ExitCode, err: err}
+				// `err` is nil on this path — it was checked above — so building
+				// the exitError around it made Error() dereference nil, and the
+				// one line the user reads on a failed gate was a formatter panic.
+				return &exitError{code: run.Eval.ExitCode, err: thresholdFailure(run.Eval)}
 			}
 		},
 	}
@@ -130,6 +149,22 @@ func newLoadCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&progress, "progress", false, "print progress to stderr while running")
 	cmd.Flags().DurationVar(&progressInterval, "progress-interval", time.Second, "progress tick interval")
 	return cmd
+}
+
+// thresholdFailure names what the target missed, so the single line Execute
+// prints on stderr says why the gate failed rather than pointing at a report
+// the caller may have redirected somewhere else.
+func thresholdFailure(e load.Evaluation) error {
+	var failed []string
+	for _, v := range e.Thresholds {
+		if !v.Passed {
+			failed = append(failed, fmt.Sprintf("%s: %s", v.Name, v.Detail))
+		}
+	}
+	if len(failed) == 0 {
+		return errors.New("the load run failed; see the report above")
+	}
+	return fmt.Errorf("threshold failed — %s", strings.Join(failed, "; "))
 }
 
 // parseRamp parses "10:100".
