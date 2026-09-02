@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/RomanAgaltsev/metronome"
+
 	"github.com/RomanAgaltsev/quiver/internal/request"
 )
 
@@ -13,19 +14,6 @@ type Verdict struct {
 	Name   string
 	Passed bool
 	Detail string
-}
-
-// Evaluation is the whole outcome of a load run: what the target was judged on,
-// whether the measurement itself can be believed and the resulting exit code.
-type Evaluation struct {
-	// Thresholds judge the TARGET. A failure here is exit 1.
-	Thresholds []Verdict
-	// Trust judges the MEASUREMENT. A failure here is exit 3, because a verdict
-	// derived from numbers that do not describe the target is worthless.
-	Trust []Verdict
-	// TargetErrorRate excludes saturation from both terms — see below.
-	TargetErrorRate float64
-	ExitCode        int
 }
 
 // Evaluation is the whole outcome of a load run: what the target was judged on,

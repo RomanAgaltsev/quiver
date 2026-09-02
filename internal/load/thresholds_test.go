@@ -5,9 +5,8 @@ import (
 	"time"
 
 	"github.com/RomanAgaltsev/metronome"
-	"github.com/stretchr/testify/require"
-
 	"github.com/RomanAgaltsev/quiver/internal/request"
+	"github.com/stretchr/testify/require"
 )
 
 func f64(v float64) *float64 { return &v }
