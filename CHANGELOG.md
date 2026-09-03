@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1](https://github.com/RomanAgaltsev/quiver/compare/v1.1.0...v1.1.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* all five findings of the load-testing implementation review ([#10](https://github.com/RomanAgaltsev/quiver/issues/10)) ([2e09e66](https://github.com/RomanAgaltsev/quiver/commit/2e09e666015d30b48dbcdf503d95b114350c32a1))
+
 ## [1.1.0](https://github.com/RomanAgaltsev/quiver/compare/v1.0.0...v1.1.0) (2026-09-02)
 
 
