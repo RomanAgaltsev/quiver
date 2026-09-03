@@ -57,6 +57,12 @@ var ErrSetup = errors.New("setup chain failed")
 // across thousands of concurrent iterations there is no coherent answer to
 // which response's captured value wins. Silently ignoring the block would let a
 // user believe a chain is happening when it is not, so this is a hard error.
+// A folder target shares one run shape, taken from the FIRST request's load:
+// block, with weight the only per-file knob. A block on any later file is
+// therefore ignored — and `thresholds:` among the ignored keys means a run can
+// go green having asserted nothing its author asked for, which is the worst
+// kind of pass. Rejecting is the same call the captures rule makes above, for
+// the same reason.
 func ValidateTargets(targets []*request.Request) error {
 	for _, r := range targets {
 		if len(r.Captures) > 0 {
@@ -67,7 +73,25 @@ func ValidateTargets(targets []*request.Request) error {
 				r.Name, r.Captures[0].Var)
 		}
 	}
+
+	for _, r := range targets[1:] {
+		if keys := r.Load.KeysBesidesWeight(); len(keys) > 0 {
+			return fmt.Errorf(
+				"request %q declares load: %s, but a folder target takes its run shape from "+
+					"the first request's load: block and %s would be ignored — "+
+					"move %s to the first request, or keep only `weight` here",
+				r.Name, strings.Join(keys, ", "),
+				pluralIsAre(len(keys)), strings.Join(keys, ", "))
+		}
+	}
 	return nil
+}
+
+func pluralIsAre(n int) string {
+	if n == 1 {
+		return "it"
+	}
+	return "they"
 }
 
 // Execute runs the setup chain, resolves the targets, drives them through
@@ -160,7 +184,7 @@ func buildRunner(opts Options, vars *env.Resolved) (metronome.Runner, string, er
 			weight = r.Load.Weight
 		}
 		weighted = append(weighted, metronome.Weighted{
-			Runner: newExecutorRunner(exec, *rr, r.Name, checks),
+			Runner: newExecutorRunner(exec, *rr, r.Name, checks, opts.Clock),
 			Weight: weight,
 		})
 		names = append(names, describeTarget(r, rr))

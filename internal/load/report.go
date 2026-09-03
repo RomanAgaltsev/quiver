@@ -141,8 +141,8 @@ func writeJSON(w io.Writer, r Run, opts ReportOptions) error {
 		// generator recorded, saturated units included.
 		"attempted":     r.Eval.Attempted,
 		"attempted_rps": r.Eval.AttemptedRPS,
-		"thresholds":        verdictsJSON(r.Eval.Thresholds),
-		"trust":             verdictsJSON(r.Eval.Trust),
+		"thresholds":    verdictsJSON(r.Eval.Thresholds),
+		"trust":         verdictsJSON(r.Eval.Trust),
 	}
 
 	buf, err := json.MarshalIndent(out, "", "  ")

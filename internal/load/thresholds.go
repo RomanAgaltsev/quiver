@@ -69,8 +69,7 @@ func Evaluate(snap metronome.Snapshot, p *Profile) Evaluation {
 		// nothing was attempted let a run in which every unit saturated satisfy
 		// an error-rate threshold — "no attempts" and "no errors" must not be
 		// the same number.
-		switch {
-		case e.Attempted == 0:
+		if e.Attempted == 0 {
 			e.Thresholds = append(e.Thresholds, Verdict{
 				Name:   "error_rate",
 				Passed: false,
@@ -78,7 +77,7 @@ func Evaluate(snap metronome.Snapshot, p *Profile) Evaluation {
 					"no units reached the target (%d of %d saturated), so there is no error rate to judge",
 					snap.Saturated, snap.Count),
 			})
-		default:
+		} else {
 			e.Thresholds = append(e.Thresholds, Verdict{
 				Name:   "error_rate",
 				Passed: e.TargetErrorRate <= *th.ErrorRate,

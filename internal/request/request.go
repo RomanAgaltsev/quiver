@@ -396,6 +396,35 @@ func (l *LoadSpec) AssertionsEnabled() bool {
 	return l == nil || l.Assertions == nil || *l.Assertions
 }
 
+// KeysBesidesWeight names every load: key this spec sets other than weight, in
+// declaration order.
+//
+// A folder target shares one run shape, taken from the first request's block,
+// and weight is the only per-file knob. Everything else on a later file is
+// ignored — so the caller can say which keys it is ignoring rather than
+// dropping them silently.
+func (l *LoadSpec) KeysBesidesWeight() []string {
+	if l == nil {
+		return nil
+	}
+	var keys []string
+	add := func(set bool, name string) {
+		if set {
+			keys = append(keys, name)
+		}
+	}
+	add(l.Rate > 0, "rate")
+	add(l.Ramp != nil, "ramp")
+	add(len(l.Phases) > 0, "phases")
+	add(l.Duration.Duration() > 0, "duration")
+	add(l.Requests > 0, "requests")
+	add(l.Concurrency > 0, "concurrency")
+	add(l.Pacing != "", "pacing")
+	add(l.Assertions != nil, "assertions")
+	add(l.Thresholds != nil, "thresholds")
+	return keys
+}
+
 // Validate checks the load profile's internal coherence. Everything here is a
 // config error (exit 2) caught before a single request is sent.
 func (l *LoadSpec) Validate(name string) error {

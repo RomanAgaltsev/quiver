@@ -36,7 +36,7 @@ func TestRunnerMapsSuccessfulResponse(t *testing.T) {
 	})
 	defer done()
 
-	res := newExecutorRunner(httpx.New(), rr, "probe", nil).Do(context.Background())
+	res := newExecutorRunner(httpx.New(), rr, "probe", nil, nil).Do(context.Background())
 	require.NoError(t, res.Err)
 	require.True(t, res.Success())
 	require.Equal(t, "200 OK", res.Code)
@@ -54,7 +54,7 @@ func TestRunnerMarksNonOKAsFailure(t *testing.T) {
 	})
 	defer done()
 
-	res := newExecutorRunner(httpx.New(), rr, "probe", nil).Do(context.Background())
+	res := newExecutorRunner(httpx.New(), rr, "probe", nil, nil).Do(context.Background())
 	require.Error(t, res.Err)
 	require.False(t, res.Success())
 	require.Contains(t, res.Err.Error(), "503")
@@ -65,7 +65,7 @@ func TestRunnerReportsTransportError(t *testing.T) {
 		Name: "dead", Protocol: request.ProtocolHTTP,
 		HTTP: &request.HTTPSpec{Method: "GET", URL: "http://127.0.0.1:1/nope"},
 	}
-	res := newExecutorRunner(httpx.New(), rr, "dead", nil).Do(context.Background())
+	res := newExecutorRunner(httpx.New(), rr, "dead", nil, nil).Do(context.Background())
 	require.Error(t, res.Err)
 	require.Positive(t, res.Latency) // measured even on failure
 }
@@ -80,11 +80,11 @@ func TestRunnerRunsAssertions(t *testing.T) {
 	failValue := "grace"
 
 	pass := []request.Assertion{{Name: "has name", From: "body", Path: "name", Op: "eq", Value: &passValue}}
-	res := newExecutorRunner(httpx.New(), rr, "probe", pass).Do(context.Background())
+	res := newExecutorRunner(httpx.New(), rr, "probe", pass, nil).Do(context.Background())
 	require.NoError(t, res.Err)
 
 	fail := []request.Assertion{{Name: "wrong", From: "body", Path: "name", Op: "eq", Value: &failValue}}
-	res = newExecutorRunner(httpx.New(), rr, "probe", fail).Do(context.Background())
+	res = newExecutorRunner(httpx.New(), rr, "probe", fail, nil).Do(context.Background())
 	require.Error(t, res.Err)
 	require.Contains(t, res.Err.Error(), "wrong")
 }
@@ -97,7 +97,7 @@ func TestRunnerUsesExecutorMeasuredLatency(t *testing.T) {
 	stub := core.ExecutorFunc(func(context.Context, core.ResolvedRequest) (*core.Response, error) {
 		return &core.Response{Status: 200, StatusText: "200 OK", OK: true, Duration: want}, nil
 	})
-	res := newExecutorRunner(stub, core.ResolvedRequest{}, "probe", nil).Do(context.Background())
+	res := newExecutorRunner(stub, core.ResolvedRequest{}, "probe", nil, nil).Do(context.Background())
 	require.Equal(t, want, res.Latency)
 }
 
@@ -109,7 +109,7 @@ func TestRunnerIsSafeForConcurrentDo(t *testing.T) {
 	})
 	defer done()
 
-	r := newExecutorRunner(httpx.New(), rr, "probe", nil)
+	r := newExecutorRunner(httpx.New(), rr, "probe", nil, nil)
 	var wg sync.WaitGroup
 	for range 50 {
 		wg.Add(1)
@@ -128,7 +128,7 @@ func TestRunnerPanicPropagatesToDriver(t *testing.T) {
 	stub := core.ExecutorFunc(func(context.Context, core.ResolvedRequest) (*core.Response, error) {
 		panic("boom")
 	})
-	r := newExecutorRunner(stub, core.ResolvedRequest{}, "probe", nil)
+	r := newExecutorRunner(stub, core.ResolvedRequest{}, "probe", nil, nil)
 	require.Panics(t, func() { _ = r.Do(context.Background()) })
 
 	var pe *metronome.PanicError
@@ -136,4 +136,74 @@ func TestRunnerPanicPropagatesToDriver(t *testing.T) {
 	for res := range d.Run(context.Background()) {
 		require.ErrorAs(t, res.Err, &pe)
 	}
+}
+
+// ── 2026-09-03 review, M2 ────────────────────────────────────────────────────
+//
+// A non-OK response used to short-circuit the assertions entirely, so the same
+// request file meant different things under `qv run` and `qv load`: run only
+// fails on non-OK with --check-status and otherwise lets assertions decide,
+// while load always failed and never evaluated them. An error-path load test —
+// assert status eq 404 — reported a 100% error rate.
+
+func TestAssertionsDecideOnANonOKResponse(t *testing.T) {
+	rr, done := httpTarget(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+	})
+	defer done()
+
+	expect404 := []request.Assertion{
+		{Name: "is 404", From: "status", Op: "eq", Value: request.Val("404")},
+	}
+
+	res := newExecutorRunner(httpx.New(), rr, "probe", expect404, nil).Do(context.Background())
+	require.NoError(t, res.Err, "the declared assertion passed, so the iteration succeeded")
+	require.True(t, res.Success())
+	require.Equal(t, "404 Not Found", res.Code)
+}
+
+func TestFailingAssertionOnANonOKResponseIsStillAnError(t *testing.T) {
+	rr, done := httpTarget(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(500)
+	})
+	defer done()
+
+	expect404 := []request.Assertion{
+		{Name: "is 404", From: "status", Op: "eq", Value: request.Val("404")},
+	}
+
+	res := newExecutorRunner(httpx.New(), rr, "probe", expect404, nil).Do(context.Background())
+	require.Error(t, res.Err)
+	require.Contains(t, res.Err.Error(), "is 404")
+}
+
+func TestNonOKIsStillAnErrorWhenNoAssertionsAreDeclared(t *testing.T) {
+	// The fallback, and the common case: with nothing declared, a non-OK
+	// response is the only success signal there is.
+	rr, done := httpTarget(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(503)
+	})
+	defer done()
+
+	res := newExecutorRunner(httpx.New(), rr, "probe", nil, nil).Do(context.Background())
+	require.Error(t, res.Err)
+	require.Contains(t, res.Err.Error(), "503")
+}
+
+// ── 2026-09-03 review, L1 ────────────────────────────────────────────────────
+
+func TestRunnerStampsStartFromTheInjectedClock(t *testing.T) {
+	// Result.Start feeds metronome's RPS inference. Reading the wall clock while
+	// the Driver runs on a ManualClock makes those figures describe real elapsed
+	// time, which in a fast test is nearly zero.
+	rr, done := httpTarget(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+	defer done()
+
+	epoch := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := metronome.NewManualClock(epoch)
+
+	res := newExecutorRunner(httpx.New(), rr, "probe", nil, clk).Do(context.Background())
+	require.Equal(t, epoch, res.Start, "Start must come from the injected clock")
 }
