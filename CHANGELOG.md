@@ -11,6 +11,49 @@ All notable changes to this project are documented here. The format follows
 
 * all five findings of the load-testing implementation review ([#10](https://github.com/RomanAgaltsev/quiver/issues/10)) ([2e09e66](https://github.com/RomanAgaltsev/quiver/commit/2e09e666015d30b48dbcdf503d95b114350c32a1))
 
+#### `qv load` — three behaviour changes worth knowing before you upgrade
+
+All three are **loud**: each one changes an exit code at a point you see immediately, and
+none quietly turns a passing run into a differently-passing one. Two convert a wrong
+outcome into a right one; the third only loosens.
+
+- **A run in which most units never reached the target now exits 3.** Open-loop units
+  that find no free worker are recorded as results but are never sent, so the
+  percentiles, the error rate and the achieved rate all describe a smaller population
+  than the run claims to have driven. Above a **10% saturated share** that is now a
+  `saturation` trust verdict. Previously a run in which *every single unit* saturated
+  exited **0** with every threshold passing — `error_rate` read 0% because there were no
+  attempts to divide by, and `min_rps` reported the *offered* rate as achieved.
+  **`--allow-lag` does not waive this**; it waives `schedule_lag` alone.
+- **`min_rps` now judges the rate that reached the target**, not the rate the generator
+  recorded. A saturated unit is still a recorded result, so the raw rate counts requests
+  that were never sent. When the two differ the report shows both, and `-o json` carries
+  `attempted` and `attempted_rps`.
+- **A request's assertions now decide a load iteration, including on a non-2xx
+  response.** Previously a non-OK response was an error *and* short-circuited the
+  assertions, so a request asserting `status eq 404` reported a 100% error rate and its
+  assertion was never evaluated — and the same file meant different things under
+  `qv run` and `qv load`. With no assertions declared, a non-OK response is still the
+  failure, which is the common case and is unchanged.
+
+#### `qv load` — one new config error
+
+- **A `load:` key other than `weight` on any but the first request of a folder target is
+  now a config error (exit 2)**, naming the file and the keys. A folder shares one run
+  shape, taken from the first request's block, and `weight` is the only per-file knob —
+  so such a block was previously *half*-honoured: its weight applied and its
+  `thresholds:` vanished without a word. If this fails a collection that used to run, it
+  was a collection whose thresholds were never being enforced.
+
+#### Also
+
+- `Result.Start` is taken from the injected clock rather than the wall clock, so a run
+  driven by a `ManualClock` no longer infers its rate figures from real elapsed time.
+
+Full review, including why the saturation verdict is a *share* rather than any saturation
+at all: `quiver/reviews/2026-09-03-load-testing-implementation-review.md` in the design
+vault. This release fixes every finding of it.
+
 ## [1.1.0](https://github.com/RomanAgaltsev/quiver/compare/v1.0.0...v1.1.0) (2026-09-02)
 
 
