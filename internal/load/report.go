@@ -50,8 +50,17 @@ func writePretty(w io.Writer, r Run, opts ReportOptions) error {
 	snap := r.Snapshot
 	fmt.Fprintf(&b, "requests    %-9d errors %d (%.2f%%)     saturated %d\n",
 		snap.Count, snap.Errors-snap.Saturated, r.Eval.TargetErrorRate*100, snap.Saturated)
-	fmt.Fprintf(&b, "achieved    %-9s throughput %s\n\n",
-		fmt.Sprintf("%.1f/s", snap.RPS), fmtBytesPerSec(snap.Throughput))
+	// When units saturated, the rate the generator recorded and the rate the
+	// target served are different numbers, and only the second one says anything
+	// about the target. Showing one without the other is how a run in which
+	// nothing was sent could read as healthy.
+	if snap.Saturated > 0 {
+		fmt.Fprintf(&b, "achieved    %-9s throughput %s   (%.1f/s recorded incl. saturated)\n\n",
+			fmt.Sprintf("%.1f/s", r.Eval.AttemptedRPS), fmtBytesPerSec(snap.Throughput), snap.RPS)
+	} else {
+		fmt.Fprintf(&b, "achieved    %-9s throughput %s\n\n",
+			fmt.Sprintf("%.1f/s", snap.RPS), fmtBytesPerSec(snap.Throughput))
+	}
 
 	// Raw and corrected are ALWAYS shown together: metronome's docs are explicit
 	// that they are read as a pair, and a large gap is the signal that the raw
@@ -127,8 +136,13 @@ func writeJSON(w io.Writer, r Run, opts ReportOptions) error {
 		// Reported separately from snapshot.error_rate, which is metronome's raw
 		// figure including saturation. This is the number thresholds judge.
 		"target_error_rate": r.Eval.TargetErrorRate,
-		"thresholds":        verdictsJSON(r.Eval.Thresholds),
-		"trust":             verdictsJSON(r.Eval.Trust),
+		// attempted is Count less the units that never found a free worker, and
+		// attempted_rps is the rate the target served. rps above is what the
+		// generator recorded, saturated units included.
+		"attempted":     r.Eval.Attempted,
+		"attempted_rps": r.Eval.AttemptedRPS,
+		"thresholds":    verdictsJSON(r.Eval.Thresholds),
+		"trust":         verdictsJSON(r.Eval.Trust),
 	}
 
 	buf, err := json.MarshalIndent(out, "", "  ")

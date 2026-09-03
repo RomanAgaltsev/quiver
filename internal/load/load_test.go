@@ -241,3 +241,46 @@ func TestExecuteRejectsUnresolvableTarget(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "missing")
 }
+
+// ── 2026-09-03 review, M3 ────────────────────────────────────────────────────
+//
+// The run shape comes from the FIRST target's load: block. `weight` is read per
+// file, so a block on a later file was half-honoured: its weight applied and its
+// thresholds vanished without a word. A threshold that is silently not enforced
+// is the worst kind of pass, and ValidateTargets already rejects captures for
+// exactly this reason rather than ignoring them.
+
+func TestValidateTargetsRejectsALoadBlockOnALaterTarget(t *testing.T) {
+	targets := []*request.Request{
+		{Name: "first", Load: &request.LoadSpec{Rate: 10}},
+		{Name: "second", Load: &request.LoadSpec{
+			Rate:       50,
+			Thresholds: &request.Thresholds{ErrorRate: f64(0.01)},
+		}},
+	}
+
+	err := ValidateTargets(targets)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "second", "the offending file must be named")
+	require.Contains(t, err.Error(), "thresholds")
+	require.Contains(t, err.Error(), "rate")
+}
+
+func TestValidateTargetsAllowsWeightOnALaterTarget(t *testing.T) {
+	targets := []*request.Request{
+		{Name: "first", Load: &request.LoadSpec{Rate: 10}},
+		{Name: "second", Load: &request.LoadSpec{Weight: 3}},
+	}
+	require.NoError(t, ValidateTargets(targets), "weight is the one per-file knob")
+}
+
+func TestValidateTargetsAllowsAFullBlockOnTheFirstTarget(t *testing.T) {
+	targets := []*request.Request{
+		{Name: "first", Load: &request.LoadSpec{
+			Rate:       10,
+			Thresholds: &request.Thresholds{ErrorRate: f64(0.01)},
+		}},
+		{Name: "second"},
+	}
+	require.NoError(t, ValidateTargets(targets))
+}

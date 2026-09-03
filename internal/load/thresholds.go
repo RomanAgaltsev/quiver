@@ -26,12 +26,24 @@ type Evaluation struct {
 	Trust []Verdict
 	// TargetErrorRate excludes saturation from both terms — see below.
 	TargetErrorRate float64
-	ExitCode        int
+	// Attempted is how many units actually reached the target: Count less the
+	// ones that never found a free worker. Zero means the run measured nothing
+	// about the target, however many Results it recorded.
+	Attempted int64
+	// AttemptedRPS is the rate the TARGET served, as distinct from the rate the
+	// generator recorded. They differ by the saturated share.
+	AttemptedRPS float64
+	ExitCode     int
 }
 
 // Evaluate judges a finished run.
 func Evaluate(snap metronome.Snapshot, p *Profile) Evaluation {
-	e := Evaluation{TargetErrorRate: targetErrorRate(snap)}
+	rate, attempted := targetErrorRate(snap)
+	e := Evaluation{
+		TargetErrorRate: rate,
+		Attempted:       attempted,
+		AttemptedRPS:    attemptedRPS(snap),
+	}
 
 	th := p.Thresholds
 	if d := th.P50.Duration(); d > 0 {
@@ -53,17 +65,41 @@ func Evaluate(snap metronome.Snapshot, p *Profile) Evaluation {
 		e.Thresholds = append(e.Thresholds, latencyVerdict("corrected_p99", snap.CorrectedP99, d))
 	}
 	if th.ErrorRate != nil {
-		e.Thresholds = append(e.Thresholds, Verdict{
-			Name:   "error_rate",
-			Passed: e.TargetErrorRate <= *th.ErrorRate,
-			Detail: fmt.Sprintf("%.2f%% (target) vs %.2f%% allowed", e.TargetErrorRate*100, *th.ErrorRate*100),
-		})
+		// An empty denominator is not a clean bill of health. Reporting 0% when
+		// nothing was attempted let a run in which every unit saturated satisfy
+		// an error-rate threshold — "no attempts" and "no errors" must not be
+		// the same number.
+		if e.Attempted == 0 {
+			e.Thresholds = append(e.Thresholds, Verdict{
+				Name:   "error_rate",
+				Passed: false,
+				Detail: fmt.Sprintf(
+					"no units reached the target (%d of %d saturated), so there is no error rate to judge",
+					snap.Saturated, snap.Count),
+			})
+		} else {
+			e.Thresholds = append(e.Thresholds, Verdict{
+				Name:   "error_rate",
+				Passed: e.TargetErrorRate <= *th.ErrorRate,
+				Detail: fmt.Sprintf("%.2f%% (target) vs %.2f%% allowed", e.TargetErrorRate*100, *th.ErrorRate*100),
+			})
+		}
 	}
 	if th.MinRPS != nil {
+		// Judged on the rate the TARGET served, not the rate the generator
+		// recorded. Snapshot.RPS is inferred from every Result including the
+		// saturated ones, which never reached the target — so a fully saturated
+		// run reported the offered rate as achieved. This is the same doctrine
+		// targetErrorRate applies, finally applied to its sibling.
+		detail := fmt.Sprintf("%.1f/s reached the target vs %.1f/s required",
+			e.AttemptedRPS, *th.MinRPS)
+		if snap.Saturated > 0 {
+			detail += fmt.Sprintf(" (%.1f/s recorded, %d saturated)", snap.RPS, snap.Saturated)
+		}
 		e.Thresholds = append(e.Thresholds, Verdict{
 			Name:   "min_rps",
-			Passed: snap.RPS >= *th.MinRPS,
-			Detail: fmt.Sprintf("%.1f/s achieved vs %.1f/s required", snap.RPS, *th.MinRPS),
+			Passed: e.AttemptedRPS >= *th.MinRPS,
+			Detail: detail,
 		})
 	}
 
@@ -90,16 +126,38 @@ func Evaluate(snap metronome.Snapshot, p *Profile) Evaluation {
 // time — so it belongs in neither the numerator nor the denominator here.
 // Comparing a declared error_rate against Snapshot.ErrorRate would blame the
 // target for the generator running out of workers.
-func targetErrorRate(snap metronome.Snapshot) float64 {
+// It returns the attempted count alongside the rate, because a zero denominator
+// is a fact the caller must act on rather than a rate of zero: reporting 0% for
+// a run in which nothing was attempted is how a fully saturated run passed an
+// error-rate threshold.
+func targetErrorRate(snap metronome.Snapshot) (rate float64, attempted int64) {
+	attempted = snap.Count - snap.Saturated
+	if attempted <= 0 {
+		return 0, 0
+	}
+	failed := snap.Errors - snap.Saturated
+	if failed <= 0 {
+		return 0, attempted
+	}
+	return float64(failed) / float64(attempted), attempted
+}
+
+// attemptedRPS is the rate the target served.
+//
+// Snapshot.RPS is inferred from the timestamps of every recorded Result, and a
+// saturated unit is a Result — metronome emits one immediately when no worker is
+// free. So RPS describes what the generator dispatched, not what the target
+// received. Scaling by the attempted share converts one into the other without
+// needing the run's span, which the Snapshot does not carry.
+func attemptedRPS(snap metronome.Snapshot) float64 {
+	if snap.Count <= 0 {
+		return 0
+	}
 	attempted := snap.Count - snap.Saturated
 	if attempted <= 0 {
 		return 0
 	}
-	failed := snap.Errors - snap.Saturated
-	if failed <= 0 {
-		return 0
-	}
-	return float64(failed) / float64(attempted)
+	return snap.RPS * float64(attempted) / float64(snap.Count)
 }
 
 // trustVerdicts judge whether the measurement describes the target at all.
@@ -111,6 +169,32 @@ func trustVerdicts(snap metronome.Snapshot, p *Profile) []Verdict {
 			Name:   "results",
 			Passed: false,
 			Detail: "no results were recorded — the run measured nothing",
+		})
+	}
+
+	// Recording Results is not the same as reaching the target. A saturated unit
+	// never found a free worker, so it was never sent: the percentiles, the
+	// error rate and the achieved rate all describe a population smaller than
+	// the run claims to have driven, and past some share they stop describing
+	// the target at all.
+	//
+	// Nothing else catches this. schedule_lag cannot — and correctly so, since
+	// OpenLoop emits a saturated unit immediately rather than delaying it, so
+	// saturation produces no lag. That is precisely why saturation needs a
+	// verdict of its own rather than being inferred from another.
+	//
+	// This is the inverse of the defect amendment A2 fixed. A2 stopped exit 3
+	// firing on healthy runs; this makes it fire on a run that measured nothing,
+	// which is the case exit 3 exists for.
+	if share := float64(snap.Saturated) / float64(snap.Count); share > maxSaturationShare {
+		out = append(out, Verdict{
+			Name:   verdictSaturation,
+			Passed: false,
+			Detail: fmt.Sprintf(
+				"%d of %d units (%.1f%%) never found a free worker and were not sent, "+
+					"so the numbers describe %d requests rather than %d — "+
+					"lower the rate, raise --concurrency, or use --pacing closed",
+				snap.Saturated, snap.Count, share*100, snap.Count-snap.Saturated, snap.Count),
 		})
 	}
 
@@ -207,6 +291,24 @@ func latencyVerdict(name string, got, want time.Duration) Verdict {
 
 // verdictScheduleLag names the one trust verdict --allow-lag may waive.
 const verdictScheduleLag = "schedule_lag"
+
+// verdictSaturation names the trust verdict for units that never reached the
+// target. It is deliberately NOT waivable by --allow-lag: a run that mostly did
+// not happen is a statement about the measurement, not about a noisy runner.
+const verdictSaturation = "saturation"
+
+// maxSaturationShare is the fraction of units that may fail to find a free
+// worker before the measurement stops describing the target.
+//
+// A few saturated units are ordinary on any loaded machine and must not cost a
+// healthy run its exit 0 — that is A2's lesson, and it is why this is a share
+// rather than `Saturated > 0`. Ten percent is the point past which the excluded
+// population is large enough to move a percentile.
+//
+// In ClosedLoop this never fires: metronome documents Saturated as always zero
+// there, because a worker does not ask for its next token until the current
+// unit completes.
+const maxSaturationShare = 0.10
 
 // anyFatalTrustFailure reports whether a trust verdict should force exit 3.
 //
