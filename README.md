@@ -317,6 +317,11 @@ block and is shared by all of them; `weight` is the only per-file knob, and it
 becomes that request's share of the mix. `order:` is meaningless under load and
 is ignored — a mix has no sequence.
 
+Any other `load:` key on a later request is a **config error** (exit 2), naming
+the file and the keys. It would otherwise be ignored — and an ignored
+`thresholds:` block means a run goes green having asserted nothing its author
+asked for.
+
 ### Reading the report
 
 ```
@@ -336,12 +341,24 @@ scheduled send time, answering "what would a client that kept to the schedule
 have seen?" A large gap between the two rows means the generator queued and the
 raw numbers understate what a real client would have suffered.
 
+**What counts as a failed iteration.** When the request declares `assertions:`,
+they decide — exactly as they do under `qv run`, and including for a non-2xx
+response. So a request asserting `status eq 404` load-tests an error path
+without reporting a 100% error rate. When it declares none, a non-OK response is
+the failure, since there is no other success signal. Set `assertions: false` in
+the `load:` block to skip them and fall back to that.
+
 `errors` and the `error_rate` threshold both exclude **saturation** — open-loop
 units that found no free worker at their scheduled time. Those never reached the
 target, so they belong in neither the numerator nor the denominator; counting
 them would blame the target for the generator running out of workers.
 `saturated` is reported on its own line, and metronome's own raw
 `snapshot.error_rate` (which does include it) is in the JSON output.
+
+For the same reason, **`min_rps` judges the rate that reached the target**, not
+the rate the generator recorded. A saturated unit is still a recorded result, so
+the raw rate counts requests that were never sent; when the two differ the
+report shows both, and the JSON carries `attempted` and `attempted_rps`.
 
 `-o json` prints the whole snapshot, both verdict lists and `exit_code` for a CI
 job to consume. Secrets are redacted in both formats.
@@ -360,7 +377,18 @@ the load" are different failures with different fixes, and collapsing them would
 throw away the signal metronome exists to surface. When both apply, 3 wins: a
 verdict derived from numbers that do not describe the target is worthless.
 
-Two things trigger it:
+Three things trigger it:
+
+- **`saturation`** — more than 10% of units never found a free worker, so they
+  were never sent. The percentiles, the error rate and the achieved rate then
+  describe a population smaller than the run claims to have driven, and past
+  that share they stop describing the target at all. A run in which *every* unit
+  saturated measured nothing, whatever its thresholds say.
+
+  Fix it the same way as schedule lag: lower the rate, raise `--concurrency`, or
+  switch to `--pacing closed`. **`--allow-lag` does not waive this** — it waives
+  `schedule_lag` alone, and "these numbers do not describe the target" must not
+  become a silent exit 0.
 
 - **`schedule_lag`** — the generator fell further behind its own schedule than
   the budget allows. The budget is `max(25ms, 5 send intervals)` unless
