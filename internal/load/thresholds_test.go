@@ -71,7 +71,13 @@ func TestSaturationDoesNotInflateTargetErrorRate(t *testing.T) {
 	e := Evaluate(snap, profileWith(request.Thresholds{ErrorRate: f64(0.01)}))
 
 	require.InDelta(t, 0.0, e.TargetErrorRate, 1e-9, "the target produced no errors at all")
-	require.Equal(t, 0, e.ExitCode, "saturation must not fail a target threshold")
+	require.False(t, anyFailed(e.Thresholds), "saturation must not fail a TARGET threshold")
+
+	// 20% of units never reached the target, so since the 2026-09-03 review this
+	// is also a trust failure: the numbers describe 800 requests, not 1000. That
+	// is exit 3 — a statement about the measurement — and specifically NOT the
+	// exit 1 this test exists to rule out.
+	require.Equal(t, 3, e.ExitCode)
 }
 
 func TestTargetErrorRateExcludesSaturationFromBothTerms(t *testing.T) {
@@ -260,4 +266,105 @@ func TestAllowLagDoesNotWaiveNonLagTrustFailures(t *testing.T) {
 	}, p)
 	require.Equal(t, 0, e.ExitCode)
 	require.NotEmpty(t, e.Trust, "still reported, just not fatal")
+}
+
+// ── 2026-09-03 review, H1 ────────────────────────────────────────────────────
+//
+// The hole this closes: with every unit saturated, nothing reached the target,
+// yet error_rate passed (no attempts read as no errors), min_rps passed
+// (metronome counts saturated Results, so the OFFERED rate read as achieved),
+// and no trust verdict looked at Saturated at all. The run exited 0.
+//
+// It is the exact inverse of amendment A2. A2 stopped exit 3 firing on healthy
+// runs; nobody then asked what makes it fire when it should.
+
+func TestTotalSaturationIsATrustFailure(t *testing.T) {
+	snap := metronome.Snapshot{Count: 500, Errors: 500, Saturated: 500, RPS: 100}
+
+	e := Evaluate(snap, profileWith(request.Thresholds{
+		ErrorRate: f64(0.01),
+		MinRPS:    f64(50),
+	}))
+
+	require.Equal(t, 3, e.ExitCode, "a run in which nothing reached the target must not exit 0")
+
+	var sat *Verdict
+	for i := range e.Trust {
+		if e.Trust[i].Name == verdictSaturation {
+			sat = &e.Trust[i]
+		}
+	}
+	require.NotNil(t, sat, "no saturation trust verdict was produced")
+	require.False(t, sat.Passed)
+	require.Contains(t, sat.Detail, "500")
+}
+
+func TestSaturationAboveTheShareIsATrustFailure(t *testing.T) {
+	// 20% of units never found a free worker.
+	snap := metronome.Snapshot{Count: 1000, Errors: 200, Saturated: 200, RPS: 100}
+	e := Evaluate(snap, profileWith(request.Thresholds{}))
+	require.Equal(t, 3, e.ExitCode)
+}
+
+func TestSaturationBelowTheShareIsNotATrustFailure(t *testing.T) {
+	// A few saturated units are ordinary and must not cost a clean run its
+	// exit 0 — A2's lesson, applied to the verdict that answers it.
+	snap := metronome.Snapshot{Count: 1000, Errors: 20, Saturated: 20, RPS: 100}
+	e := Evaluate(snap, profileWith(request.Thresholds{}))
+	require.Equal(t, 0, e.ExitCode)
+	require.Empty(t, e.Trust)
+}
+
+func TestSaturationVerdictIsNotWaivedByAllowLag(t *testing.T) {
+	// --allow-lag waives schedule_lag and nothing else: "these numbers do not
+	// describe the target" must not become a silent exit 0.
+	p := profileWith(request.Thresholds{})
+	p.AllowLag = true
+	snap := metronome.Snapshot{Count: 500, Errors: 500, Saturated: 500, RPS: 100}
+
+	require.Equal(t, 3, Evaluate(snap, p).ExitCode)
+}
+
+func TestErrorRateFailsWhenNothingWasAttempted(t *testing.T) {
+	// "No attempts" and "no errors" must not be the same number.
+	snap := metronome.Snapshot{Count: 500, Errors: 500, Saturated: 500, RPS: 100}
+	e := Evaluate(snap, profileWith(request.Thresholds{ErrorRate: f64(0.01)}))
+
+	var er *Verdict
+	for i := range e.Thresholds {
+		if e.Thresholds[i].Name == "error_rate" {
+			er = &e.Thresholds[i]
+		}
+	}
+	require.NotNil(t, er)
+	require.False(t, er.Passed, "error_rate reported a clean bill of health on zero attempts")
+	require.Contains(t, er.Detail, "reached the target")
+}
+
+// ── 2026-09-03 review, M1 ────────────────────────────────────────────────────
+
+func TestMinRPSIsJudgedOnAttemptedThroughput(t *testing.T) {
+	// 5% saturated: below the trust share, so this isolates the threshold.
+	// 100/s recorded, but only 950 of 1000 units reached the target, so the
+	// target served ~95/s.
+	snap := metronome.Snapshot{Count: 1000, Errors: 50, Saturated: 50, RPS: 100}
+
+	e := Evaluate(snap, profileWith(request.Thresholds{MinRPS: f64(98)}))
+	require.Equal(t, 1, e.ExitCode, "min_rps must judge the rate the TARGET served")
+
+	var v *Verdict
+	for i := range e.Thresholds {
+		if e.Thresholds[i].Name == "min_rps" {
+			v = &e.Thresholds[i]
+		}
+	}
+	require.NotNil(t, v)
+	require.False(t, v.Passed)
+	require.Contains(t, v.Detail, "95")
+}
+
+func TestMinRPSUnaffectedWithoutSaturation(t *testing.T) {
+	snap := metronome.Snapshot{Count: 1000, Saturated: 0, RPS: 100}
+	e := Evaluate(snap, profileWith(request.Thresholds{MinRPS: f64(98)}))
+	require.Equal(t, 0, e.ExitCode)
 }
