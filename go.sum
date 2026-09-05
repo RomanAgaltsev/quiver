@@ -1,7 +1,7 @@
 github.com/HdrHistogram/hdrhistogram-go v1.3.0 h1:NBGs5RJ6Q7lDFhszi5AHovwDrSzJAF1ElZy2g0suRTg=
 github.com/HdrHistogram/hdrhistogram-go v1.3.0/go.mod h1:CiIeGiHSd06zjX+FypuEJ5EQ07KKtxZ+8J6hszwVQig=
-github.com/RomanAgaltsev/metronome v0.4.0 h1:aIB42m0yMv0S/+0jHXmNHR9skohuQz2SsvUbWosMMw4=
-github.com/RomanAgaltsev/metronome v0.4.0/go.mod h1:61cEENvbE5ODCNJffGuiv+77qhTOLzjWxUn4wVSg7Bs=
+github.com/RomanAgaltsev/metronome v0.5.0 h1:BZn8KSNNd99Dq33cB2a0itLjmsoeruCdREQC9znnwd0=
+github.com/RomanAgaltsev/metronome v0.5.0/go.mod h1:61cEENvbE5ODCNJffGuiv+77qhTOLzjWxUn4wVSg7Bs=
 github.com/bufbuild/protocompile v0.14.1 h1:iA73zAf/fyljNjQKwYzUHD6AD4R8KMasmwa/FBatYVw=
 github.com/bufbuild/protocompile v0.14.1/go.mod h1:ppVdAIhbr2H8asPk6k4pY7t9zB1OU5DoEw9xY/FUi1c=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

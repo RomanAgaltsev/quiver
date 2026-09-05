@@ -3,7 +3,7 @@ module github.com/RomanAgaltsev/quiver
 go 1.26
 
 require (
-	github.com/RomanAgaltsev/metronome v0.4.0
+	github.com/RomanAgaltsev/metronome v0.5.0
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/fatih/color v1.19.0
 	github.com/goccy/go-yaml v1.19.2
