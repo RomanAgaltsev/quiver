@@ -5,6 +5,19 @@ vars:
     sh: git describe --tags --always --dirty
   LDFLAGS: -X github.com/RomanAgaltsev/quiver/internal/cli.Version={{.VERSION}}
 
+
+  # -race needs cgo, and cgo needs a C toolchain -- which this workstation has no
+  # gcc for, so the native race tasks cannot even build here. The :docker tasks
+  # run the identical gate in a Linux container, which is also the platform CI
+  # runs on. `task toolchain:check` reports which of them you can use.
+  GO_IMAGE: "golang:1.26"
+  DOCKER_RUN: >-
+    docker run --rm
+    -v "{{.ROOT_DIR | replace "\\" "/"}}:/src"
+    -v go-race-modcache:/go/pkg/mod
+    -v go-race-buildcache:/root/.cache/go-build
+    -w /src {{.GO_IMAGE}}
+
 tasks:
   build:
     desc: Build ./qv with the version stamped in.
@@ -81,3 +94,16 @@ tasks:
       - >-
         go run ./cmd/qv load examples/local/load/get-users.yaml
         --setup examples/local/requests/ --env dev
+
+  test:race:docker:
+    desc: >-
+      What CI runs, in a Linux container -- no gcc needed on the host, and the
+      container is the same platform CI's race job uses.
+    cmds: ['{{.DOCKER_RUN}} go test -race -shuffle=on ./...']
+
+  toolchain:check:
+    desc: report which of test / test:docker / test:norace can run here
+    silent: true
+    cmds:
+      - if command -v gcc >/dev/null 2>&1; then echo "C toolchain -- $(gcc --version | head -1)"; else echo "C toolchain -- none; the native race task cannot build, use the :docker one"; fi
+      - if docker version >/dev/null 2>&1; then echo "docker -- available"; else echo "docker -- none; only a no-race run is left, and it does NOT satisfy the gate"; fi
