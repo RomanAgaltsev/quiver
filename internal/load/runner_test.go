@@ -60,14 +60,60 @@ func TestRunnerMarksNonOKAsFailure(t *testing.T) {
 	require.Contains(t, res.Err.Error(), "503")
 }
 
+// steppingClock advances by exactly one step on every read, so a span measured
+// across two reads is one step no matter how fast the operation really was.
+//
+// It exists because `require.Positive(t, res.Latency)` against the system clock
+// is not a property the clock guarantees: a connection refused on loopback
+// returns in microseconds, and Windows' timer granularity is coarse enough that
+// both reads can land in the same tick and report 0s. That is a correct
+// measurement of a very fast failure, so the assertion — not the code — was
+// wrong, and it failed a release PR to prove it.
+//
+// Weakening it to `>= 0` would have asserted nothing at all: a Duration is
+// non-negative by construction. Stepping the injected clock instead makes the
+// real claim testable — the error path measures from start to the reading after
+// Execute — and makes it exact rather than probable.
+type steppingClock struct {
+	*metronome.ManualClock
+	step time.Duration
+}
+
+func newSteppingClock(step time.Duration) *steppingClock {
+	return &steppingClock{ManualClock: metronome.NewManualClock(time.Unix(0, 0).UTC()), step: step}
+}
+
+func (c *steppingClock) Now() time.Time {
+	c.Advance(c.step)
+	return c.ManualClock.Now()
+}
+
 func TestRunnerReportsTransportError(t *testing.T) {
+	rr := core.ResolvedRequest{
+		Name: "dead", Protocol: request.ProtocolHTTP,
+		HTTP: &request.HTTPSpec{Method: "GET", URL: "http://127.0.0.1:1/nope"},
+	}
+	clk := newSteppingClock(7 * time.Millisecond)
+
+	res := newExecutorRunner(httpx.New(), rr, "dead", nil, clk).Do(context.Background())
+	require.Error(t, res.Err)
+	// Measured even on failure: start and end came from the injected clock, one
+	// step apart. Any code path that skipped the measurement would report 0.
+	require.Equal(t, 7*time.Millisecond, res.Latency)
+	require.Equal(t, time.Unix(0, 0).UTC().Add(7*time.Millisecond), res.Start)
+}
+
+// The system-clock path must still work end to end; it just cannot promise a
+// non-zero duration for an operation faster than the clock can resolve.
+func TestRunnerReportsTransportErrorOnTheSystemClock(t *testing.T) {
 	rr := core.ResolvedRequest{
 		Name: "dead", Protocol: request.ProtocolHTTP,
 		HTTP: &request.HTTPSpec{Method: "GET", URL: "http://127.0.0.1:1/nope"},
 	}
 	res := newExecutorRunner(httpx.New(), rr, "dead", nil, nil).Do(context.Background())
 	require.Error(t, res.Err)
-	require.Positive(t, res.Latency) // measured even on failure
+	require.False(t, res.Success())
+	require.False(t, res.Start.IsZero(), "the start stamp is taken before the attempt")
 }
 
 func TestRunnerRunsAssertions(t *testing.T) {
