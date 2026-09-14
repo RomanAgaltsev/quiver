@@ -3,6 +3,7 @@ package gen
 import (
 	"fmt"
 	"path"
+	"path/filepath"
 	"sort"
 
 	"github.com/RomanAgaltsev/quiver/internal/request"
@@ -15,12 +16,17 @@ const GRPCTargetVar = "grpc_target"
 
 // ProtoOptions is what the CLI knows and the mapper needs.
 type ProtoOptions struct {
-	// ProtoFiles is written into each request's grpc.proto_files, already
-	// relative to the generated file. Empty for a reflection source, which
-	// resolves descriptors from the server at run time.
+	// ProtoFiles are ABSOLUTE paths to the .proto sources. They are rewritten
+	// per generated file to be relative to that file, because grpc.proto_files
+	// is resolved relative to the request file rather than to the working
+	// directory. Empty for a reflection source, which resolves descriptors from
+	// the server at run time.
 	ProtoFiles []string
-	Plaintext  bool
-	Depth      int
+	// OutDir is the collection root the files will be written into. It is used
+	// only to compute those relative paths; nothing here touches the disk.
+	OutDir    string
+	Plaintext bool
+	Depth     int
 }
 
 // MapProto turns enumerated RPCs into request files, plus notes for the report.
@@ -41,15 +47,12 @@ func MapProto(infos []grpcx.MethodInfo, opts ProtoOptions) ([]GeneratedFile, []s
 			streaming = append(streaming, mi.Full)
 			continue
 		}
-		req, err := mapMethod(mi, opts.ProtoFiles, opts.Plaintext, opts.Depth)
+		p := protoFilePath(mi)
+		req, err := mapMethod(mi, relativeProtoFiles(opts.ProtoFiles, opts.OutDir, p), opts.Plaintext, opts.Depth)
 		if err != nil {
 			return nil, nil, err
 		}
-		files = append(files, GeneratedFile{
-			Path:        protoFilePath(mi),
-			Req:         req,
-			OperationID: mi.Full,
-		})
+		files = append(files, GeneratedFile{Path: p, Req: req, OperationID: mi.Full})
 	}
 
 	if len(streaming) > 0 {
@@ -125,4 +128,36 @@ func lastDot(s string) int {
 // worth writing down is where to send the calls.
 func ProtoCollection(target string) Collection {
 	return Collection{Defaults: map[string]string{GRPCTargetVar: target}}
+}
+
+// relativeProtoFiles rewrites absolute .proto paths to be relative to the
+// generated request file that will name them.
+//
+// grpc.proto_files is resolved relative to the request file, not to the working
+// directory, so a path that is correct in the terminal that ran the generator is
+// wrong everywhere else. Separators are forced to "/" so a collection generated
+// on Windows still runs on Linux — the kind of thing that passes on the machine
+// that wrote it and fails on every other one.
+func relativeProtoFiles(abs []string, outDir, filePath string) []string {
+	if len(abs) == 0 {
+		return nil
+	}
+	dir := filepath.Dir(filepath.Join(outDir, filepath.FromSlash(filePath)))
+	out := make([]string, 0, len(abs))
+	for _, p := range abs {
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			// Two different Windows volumes have no relative path between them —
+			// a collection generated into %TEMP% on C: from a .proto on E: is the
+			// ordinary case, not a corner one. An absolute path is then the only
+			// correct answer, and the loader already honours it (env.go keeps an
+			// absolute proto_files entry as-is and joins only relative ones).
+			// Native separators are kept: this path is machine-specific by
+			// definition, so there is nothing to make portable.
+			out = append(out, p)
+			continue
+		}
+		out = append(out, filepath.ToSlash(rel))
+	}
+	return out
 }

@@ -1,16 +1,19 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/RomanAgaltsev/quiver/internal/gen"
+	"github.com/RomanAgaltsev/quiver/internal/transport/grpcx"
 )
 
 func newGenCmd() *cobra.Command {
@@ -20,7 +23,7 @@ func newGenCmd() *cobra.Command {
 		Long: "Turn a machine-readable API description into a runnable quiver collection.\n\n" +
 			"Only OpenAPI 3.x is supported today; proto and GraphQL generation are planned.",
 	}
-	cmd.AddCommand(newGenOpenAPICmd())
+	cmd.AddCommand(newGenOpenAPICmd(), newGenProtoCmd())
 	return cmd
 }
 
@@ -171,4 +174,179 @@ func sorted(ss []string) []string {
 	out := append([]string(nil), ss...)
 	sort.Strings(out)
 	return out
+}
+
+func newGenProtoCmd() *cobra.Command {
+	var (
+		outDir    string
+		reflect   string
+		target    string
+		plaintext bool
+		depth     int
+		force     bool
+		check     bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "proto [files...]",
+		Short: "Generate a gRPC collection from .proto files or a reflective server",
+		Long: "Generate one request file per unary RPC, plus a collection.yaml carrying the " +
+			"target as {{grpc_target}}.\n\n" +
+			"Descriptors come from .proto files (with --target naming the server to call) or " +
+			"from a live server's reflection service (--reflect). Streaming RPCs are skipped " +
+			"and reported: quiver is unary-only.\n\n" +
+			"Messages are generated as protojson, so field names are lowerCamelCase and will " +
+			"not match the .proto verbatim — a proto pet_id is sent as petId.\n\n" +
+			"Re-generation follows the same lockfile rules as `qv gen openapi`.\n\n" +
+			"Exit codes: 0 generated (skips included), 1 only for --check drift, " +
+			"2 bad flags, an uncompilable .proto, an unreachable server, or unwritable output.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runGenProto(cmd.Context(), cmd.OutOrStdout(), genProtoArgs{
+				files: args, reflect: reflect, target: target, plaintext: plaintext,
+				depth: depth, outDir: outDir, force: force, check: check,
+			})
+		},
+	}
+
+	f := cmd.Flags()
+	f.StringVarP(&outDir, "output", "o", ".", "output directory for the generated collection")
+	f.StringVar(&reflect, "reflect", "", "enumerate from this server's reflection service (host:port)")
+	f.StringVar(&target, "target", "", "server the generated requests call (required with .proto files)")
+	f.BoolVar(&plaintext, "plaintext", false, "generated requests dial without TLS")
+	f.IntVar(&depth, "depth", gen.DefaultProtoDepth, "how deep to nest generated message skeletons")
+	f.BoolVar(&force, "force", false, "overwrite files you have edited since they were generated")
+	f.BoolVar(&check, "check", false, "report what would change and exit 1 if anything would; write nothing")
+
+	return cmd
+}
+
+type genProtoArgs struct {
+	files     []string
+	reflect   string
+	target    string
+	plaintext bool
+	depth     int
+	outDir    string
+	force     bool
+	check     bool
+}
+
+// validate rejects an incoherent invocation before anything is compiled or
+// dialled, which is the package's standing rule: a run that will be refused must
+// not touch a real system first.
+func (a genProtoArgs) validate() error {
+	switch {
+	case len(a.files) == 0 && a.reflect == "":
+		return errors.New("name one or more .proto files, or pass --reflect host:port")
+	case len(a.files) > 0 && a.reflect != "":
+		return errors.New("--reflect and .proto file arguments are two sources for one run; pick one")
+	case len(a.files) > 0 && a.target == "":
+		return errors.New(
+			"--target host:port is required with .proto files: a .proto says what to call, not where")
+	case a.depth <= 0:
+		return fmt.Errorf("--depth must be positive, got %d", a.depth)
+	}
+	return nil
+}
+
+func runGenProto(ctx context.Context, w io.Writer, a genProtoArgs) error {
+	if err := a.validate(); err != nil {
+		return configErr(err)
+	}
+
+	lock, err := gen.LoadLock(a.outDir)
+	if err != nil {
+		return configErr(err)
+	}
+
+	infos, opts, err := protoSource(ctx, a, lock)
+	if err != nil {
+		return configErr(err)
+	}
+	lock.Generator = "qv " + version()
+
+	files, notes, err := gen.MapProto(infos, opts)
+	if err != nil {
+		return configErr(err)
+	}
+
+	target := a.target
+	if target == "" {
+		target = a.reflect
+	}
+	coll := gen.ProtoCollection(target)
+
+	if a.check {
+		rep, pErr := gen.Plan(a.outDir, files, coll, lock, a.force)
+		if pErr != nil {
+			return configErr(pErr)
+		}
+		if pErr := printReport(w, rep, notes, true); pErr != nil {
+			return pErr
+		}
+		if rep.Changed() {
+			return runErr(errors.New(
+				"the collection is out of date with its descriptors; re-run without --check"))
+		}
+		return nil
+	}
+
+	rep, err := gen.Write(a.outDir, files, coll, lock, a.force)
+	if err != nil {
+		return configErr(err)
+	}
+	return printReport(w, rep, notes, false)
+}
+
+// protoSource enumerates from whichever descriptor source was chosen and records
+// it in the lock.
+func protoSource(ctx context.Context, a genProtoArgs, lock *gen.Lock) ([]grpcx.MethodInfo, gen.ProtoOptions, error) {
+	opts := gen.ProtoOptions{Plaintext: a.plaintext, Depth: a.depth, OutDir: a.outDir}
+
+	if a.reflect != "" {
+		infos, err := grpcx.EnumerateFromReflection(ctx, a.reflect, a.plaintext)
+		if err != nil {
+			return nil, opts, err
+		}
+		lock.SetReflectSource(a.reflect)
+		return infos, opts, nil
+	}
+
+	infos, err := grpcx.EnumerateFromProtoFiles(a.files)
+	if err != nil {
+		return nil, opts, err
+	}
+	// Absolute here so MapProto can make them relative to each generated file;
+	// grpc.proto_files resolves against the request file, not the caller's cwd.
+	abs := make([]string, 0, len(a.files))
+	for _, p := range a.files {
+		ap, aErr := filepath.Abs(p)
+		if aErr != nil {
+			return nil, opts, fmt.Errorf("resolve %s: %w", p, aErr)
+		}
+		abs = append(abs, ap)
+	}
+	opts.ProtoFiles = abs
+
+	// The lock's source is the .proto set, hashed so a changed descriptor is
+	// visible the way a changed OpenAPI document is.
+	lock.SetSource(strings.Join(a.files, ","), protoBytes(a.files))
+	return infos, opts, nil
+}
+
+// protoBytes concatenates the .proto sources so the lock can fingerprint the
+// whole set rather than only the first file.
+func protoBytes(paths []string) []byte {
+	var all []byte
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			// Unreadable is already impossible here — enumeration compiled them
+			// — but a partial hash is better than a panic and still changes when
+			// the readable files do.
+			continue
+		}
+		all = append(all, b...)
+	}
+	return all
 }

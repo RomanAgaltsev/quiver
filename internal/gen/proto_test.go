@@ -196,3 +196,32 @@ func TestMappedRPCsAreValidRequests(t *testing.T) {
 		}
 	}
 }
+
+// relativeProtoFiles is unit-tested with same-volume paths, because that is the
+// only case in which a relative path exists at all — and it is the case whose
+// separators have to be portable.
+func TestRelativeProtoFilesIsSlashSeparatedAndClimbsOut(t *testing.T) {
+	root := t.TempDir()
+	proto := filepath.Join(root, "api", "petstore.proto")
+	out := filepath.Join(root, "collection")
+
+	got := relativeProtoFiles([]string{proto}, out, "pkg-petstore/GetPet.yaml")
+	require.Equal(t, []string{"../../api/petstore.proto"}, got)
+}
+
+// A file at the collection root (an unslugifiable service name) climbs one level
+// less. Computing the path once for the whole run would get exactly this wrong.
+func TestRelativeProtoFilesDependsOnTheFilesOwnDirectory(t *testing.T) {
+	root := t.TempDir()
+	proto := filepath.Join(root, "api", "petstore.proto")
+	out := filepath.Join(root, "collection")
+
+	nested := relativeProtoFiles([]string{proto}, out, "svc/Method.yaml")
+	atRoot := relativeProtoFiles([]string{proto}, out, "Method.yaml")
+	require.Equal(t, []string{"../../api/petstore.proto"}, nested)
+	require.Equal(t, []string{"../api/petstore.proto"}, atRoot)
+}
+
+func TestRelativeProtoFilesOfNothingIsNothing(t *testing.T) {
+	require.Nil(t, relativeProtoFiles(nil, "out", "a/b.yaml"))
+}
