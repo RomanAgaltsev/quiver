@@ -164,19 +164,21 @@ func verdictsJSON(vs []Verdict) []map[string]any {
 	return out
 }
 
-// progressWriter prints inter-tick deltas during a run.
+// progressWriter prints a trailing-window view of the run.
 //
-// It prints ONLY count, errors and achieved rate. Every Snapshot field is
-// cumulative, so live percentiles or a live MaxScheduleLag would be lifetime
-// figures presented as current ones — one early stall would pin lag red for the
-// rest of the run. Those arrive when metronome ships rolling-window Stats
-// (its v0.5); until then quiver declines to print a number it cannot stand behind.
+// Every field it prints comes from RollingStats.Window(), a snapshot over the
+// last window worth of Results rather than the whole run. That is what makes
+// live percentiles and live lag honest, and it is why quiver refused to print
+// them at all while it held a cumulative Snapshot: one early stall would have
+// pinned lag red for the rest of the run.
+//
+// The window covers traffic sent during --warmup as well. Warmup is excluded
+// from the report, not from what is happening now -- a progress line printing
+// zeros while the pool warms looks like a hung run.
 type progressWriter struct {
-	w         io.Writer
-	every     time.Duration
-	lastCount int64
-	lastErrs  int64
-	elapsed   time.Duration
+	w       io.Writer
+	every   time.Duration
+	elapsed time.Duration
 }
 
 func newProgressWriter(w io.Writer, every time.Duration) *progressWriter {
@@ -186,15 +188,18 @@ func newProgressWriter(w io.Writer, every time.Duration) *progressWriter {
 	return &progressWriter{w: w, every: every}
 }
 
-func (p *progressWriter) tick(snap metronome.Snapshot) {
+// tick prints one line from a trailing-window snapshot. No deltas are derived:
+// the window is already the current view, and subtracting the previous tick on
+// top of it would halve the reported rate.
+//
+// The rate column is Snapshot.RPS. Snapshot.Throughput is bytes per second and
+// belongs in the report's throughput line, not beside a request count.
+func (p *progressWriter) tick(win metronome.Snapshot) {
 	p.elapsed += p.every
-	dCount := snap.Count - p.lastCount
-	dErrs := snap.Errors - p.lastErrs
-	p.lastCount, p.lastErrs = snap.Count, snap.Errors
-
-	rate := float64(dCount) / p.every.Seconds()
-	_, _ = fmt.Fprintf(p.w, "%6s  %6d reqs  %4d err  %7.1f/s\n",
-		fmtDuration(p.elapsed), snap.Count, dErrs, rate)
+	_, _ = fmt.Fprintf(p.w,
+		"%6s  %6d reqs  %4d err  %7.1f/s   p50 %-8s p99 %-8s lag %s\n",
+		fmtDuration(p.elapsed), win.Count, win.Errors, win.RPS,
+		ms(win.P50), ms(win.P99), ms(win.MaxScheduleLag))
 }
 
 // failedNamed reports whether a named verdict is present and failing.

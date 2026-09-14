@@ -119,22 +119,50 @@ func TestReportUnknownFormat(t *testing.T) {
 	require.Error(t, WriteReport(&bytes.Buffer{}, sampleRun(), ReportOptions{Format: "xml"}))
 }
 
-// Progress prints inter-tick DELTAS quiver computes itself. It deliberately
-// prints no percentiles and no lag: every Snapshot field is cumulative, so
-// those would be lifetime figures presented as current ones. Live versions
-// arrive with metronome v0.5's rolling-window Stats.
-func TestProgressPrintsDeltasNotLifetimeFigures(t *testing.T) {
+// Progress prints a TRAILING-WINDOW view, which is what makes live percentiles
+// and live lag honest. This test replaces TestProgressPrintsDeltasNotLifetimeFigures,
+// whose contract was the opposite: it asserted the line carried no p99 and no lag,
+// because against a cumulative Snapshot those would have been lifetime figures
+// presented as current ones. metronome v0.5 removed that constraint and quiver
+// pinned it in v0.9.0, so the refusal is now the thing that would be wrong.
+func TestProgressWriterPrintsWindowPercentiles(t *testing.T) {
 	var buf bytes.Buffer
 	pw := newProgressWriter(&buf, time.Second)
 
-	pw.tick(metronome.Snapshot{Count: 250, Errors: 0, P99: time.Hour, MaxScheduleLag: time.Hour})
-	pw.tick(metronome.Snapshot{Count: 500, Errors: 1, P99: time.Hour, MaxScheduleLag: time.Hour})
+	pw.tick(metronome.Snapshot{
+		Count:          1000,
+		Errors:         3,
+		P50:            12 * time.Millisecond,
+		P99:            80 * time.Millisecond,
+		MaxScheduleLag: 4 * time.Millisecond,
+		Window:         time.Second,
+		Throughput:     1000,
+	})
 
 	out := buf.String()
-	require.Contains(t, out, "250")
-	require.Contains(t, out, "500")
-	require.NotContains(t, out, "p99")
-	require.NotContains(t, out, "lag")
+	for _, want := range []string{"1000", "p50", "12", "p99", "80", "lag"} {
+		require.Containsf(t, out, want, "progress line %%q missing %%q", out, want)
+	}
+}
+
+// A trailing window already answers "what is happening now", so the writer must
+// not also subtract the previous tick"s count. Doing both would halve the
+// reported rate -- the delta arithmetic was the v0.4.0 workaround for a
+// cumulative Snapshot and has no place now.
+func TestProgressWriterUsesWindowNotDeltas(t *testing.T) {
+	var buf bytes.Buffer
+	pw := newProgressWriter(&buf, time.Second)
+
+	snap := metronome.Snapshot{Count: 500, RPS: 500, Window: time.Second}
+	pw.tick(snap)
+	buf.Reset()
+	pw.tick(snap)
+
+	out := buf.String()
+	require.Contains(t, out, "500 reqs",
+		"the second identical tick reported a count delta rather than the window")
+	require.Contains(t, out, "500.0/s",
+		"the second identical tick reported a rate delta rather than the window")
 }
 
 // The header states what actually bounded the run. A requests-bounded profile

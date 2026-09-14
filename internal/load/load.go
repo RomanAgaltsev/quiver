@@ -232,33 +232,52 @@ func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Sna
 		Clock:       opts.Clock, // nil is fine: the Driver falls back to SystemClock
 	}
 
-	stats := metronome.NewStatsRange(statsLow, statsHigh, statsSigfigs)
+	total := metronome.NewStatsRange(statsLow, statsHigh, statsSigfigs)
 	results := d.Run(ctx)
 
 	if opts.Progress == nil {
-		for res := range results {
-			stats.Record(res)
-		}
-		return stats.Snapshot(), nil
+		metronome.Drain(results, total)
+		return total.Snapshot(), nil
 	}
 
 	interval := opts.ProgressInterval
 	if interval <= 0 {
 		interval = time.Second
 	}
+
+	// One bucket per progress tick, so the trailing view and the thing printing
+	// it agree by construction. The range must match total's: a rolling window
+	// on a different range would make Window().P99 and Snapshot().P99 disagree
+	// for no visible reason, and would reintroduce the low-side clamping that
+	// amendment A2 fixed.
+	live := metronome.NewRollingStats(metronome.Rolling{
+		Lo:      statsLow,
+		Hi:      statsHigh,
+		Sigfigs: statsSigfigs,
+		Window:  10 * interval,
+		Clock:   opts.Clock,
+	})
+
+	sink := metronome.Multi(total, live)
+
 	pw := newProgressWriter(opts.Progress, interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Drain appears only on the path above. It blocks until the channel closes,
+	// so a ticker cannot interleave with it; the shared recorder tree is what
+	// makes the ticker and the report read one stream, not Drain itself. Do not
+	// restructure this into a goroutine to force Drain in -- drive's contract is
+	// that it owns none.
 	for {
 		select {
 		case res, ok := <-results:
 			if !ok {
-				return stats.Snapshot(), nil
+				return total.Snapshot(), nil
 			}
-			stats.Record(res)
+			sink.Record(res)
 		case <-ticker.C:
-			pw.tick(stats.Snapshot())
+			pw.tick(live.Window())
 		}
 	}
 }
