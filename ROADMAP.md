@@ -16,7 +16,7 @@ Promote any saved request or folder into a load test, with no rewrite:
 qv load requests/checkout/ --rate 200 --duration 30s --setup requests/auth/
 ```
 
-- **Engine: [metronome](https://github.com/RomanAgaltsev/metronome) v0.4.0**, pinned
+- **Engine: [metronome](https://github.com/RomanAgaltsev/metronome) v0.9.0**, pinned
   exactly. It is a protocol-agnostic Go load kernel that is already built and released;
   quiver supplies a small `core.Executor` → `metronome.Runner` adapter and nothing else
   about generation, pacing, or statistics.
