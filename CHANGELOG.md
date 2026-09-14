@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1](https://github.com/RomanAgaltsev/quiver/compare/v1.4.0...v1.4.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* make the transport-error latency assertion exact instead of probable ([#25](https://github.com/RomanAgaltsev/quiver/issues/25)) ([24b6856](https://github.com/RomanAgaltsev/quiver/commit/24b6856bcae54c1c676b89d822284a695238376d))
+
 ## [1.4.0](https://github.com/RomanAgaltsev/quiver/compare/v1.3.0...v1.4.0) (2026-09-14)
 
 
