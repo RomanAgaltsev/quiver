@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0](https://github.com/RomanAgaltsev/quiver/compare/v1.2.0...v1.3.0) (2026-09-14)
+
+
+### Features
+
+* qv gen openapi — generate a collection from an OpenAPI spec ([#21](https://github.com/RomanAgaltsev/quiver/issues/21)) ([e70592e](https://github.com/RomanAgaltsev/quiver/commit/e70592ea8a0bfdd8daa09763db920c96d3aff18b))
+
 ## [1.2.0](https://github.com/RomanAgaltsev/quiver/compare/v1.1.1...v1.2.0) (2026-09-14)
 
 
