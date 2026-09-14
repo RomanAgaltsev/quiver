@@ -343,6 +343,13 @@ type LoadSpec struct {
 	Duration Duration `yaml:"duration,omitempty"`
 	Requests int      `yaml:"requests,omitempty"`
 
+	// Warmup excludes the first N of the run from the REPORT, not from the
+	// load: the traffic is still sent, and --progress still shows it. It exists
+	// because cold connection pools, TLS handshakes that will be reused and an
+	// unwarmed target all land in the histogram a p99 threshold is judged
+	// against, and none of them is the system under test.
+	Warmup Duration `yaml:"warmup,omitempty"`
+
 	Concurrency int    `yaml:"concurrency,omitempty"` // max in-flight; 0 == metronome default
 	Pacing      string `yaml:"pacing,omitempty"`      // "open" (default) | "closed"
 
@@ -472,6 +479,20 @@ func (l *LoadSpec) Validate(name string) error {
 
 	if l.Duration.Duration() <= 0 && l.Requests <= 0 {
 		return fmt.Errorf("%s: set duration or requests — an unbounded load run is refused", where)
+	}
+	if w := l.Warmup.Duration(); w != 0 {
+		if w < 0 {
+			return fmt.Errorf("%s: warmup must not be negative, got %v", where, w)
+		}
+		// A warmup that consumes the whole run leaves nothing to report. Only
+		// checkable against a duration-bounded run: a requests-bounded one has
+		// no span to compare against, and rejecting it would refuse a legal
+		// configuration.
+		if d := l.Duration.Duration(); d > 0 && w >= d {
+			return fmt.Errorf(
+				"%s: warmup %v is not shorter than duration %v — it would exclude the whole run",
+				where, w, d)
+		}
 	}
 	if l.Requests < 0 {
 		return fmt.Errorf("%s: requests must not be negative", where)

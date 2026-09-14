@@ -24,6 +24,13 @@ type Run struct {
 	// ByRequest is one entry per request in a folder target, sorted by name.
 	// Empty for a run that was never broken down.
 	ByRequest []requestStats
+
+	// Warmup is the excluded prefix, zero when --warmup was not set. Skipped is
+	// how many Results it kept out of Snapshot. Snapshot.Count + Skipped is the
+	// whole population the run produced, which is what makes the exclusion
+	// auditable rather than a number that quietly shrank.
+	Warmup  time.Duration
+	Skipped int64
 }
 
 // requestStats is one endpoint's slice of a load run.
@@ -42,6 +49,10 @@ type requestStats struct {
 // Series returns the child recorders rather than their snapshots, so each is
 // snapshotted here.
 func breakdown(ls *metronome.LabeledStats[*metronome.Stats]) []requestStats {
+	// nil for a single-target run, which is not broken down at all.
+	if ls == nil {
+		return nil
+	}
 	series := ls.Series()
 	out := make([]requestStats, 0, len(series))
 	for name, child := range series {
@@ -112,6 +123,15 @@ func writePretty(w io.Writer, r Run, opts ReportOptions) error {
 	}
 	fmt.Fprintf(&b, "schedule lag    max %s  (budget %s)   %s\n",
 		ms(snap.MaxScheduleLag), r.Profile.LagBudget(), lagState)
+
+	// Count + Skipped is the whole population the run produced. "measured 800 of
+	// 1000" is the honest line; "800 requests" on its own invites the reader to
+	// wonder where the rest went, and a threshold judged over a silently reduced
+	// population is exactly what this exists to prevent.
+	if r.Warmup > 0 {
+		fmt.Fprintf(&b, "measured        %d of %d requests  (%s warmup excluded)\n",
+			snap.Count, snap.Count+r.Skipped, fmtDuration(r.Warmup))
+	}
 
 	writeBreakdown(&b, r.ByRequest)
 
@@ -235,6 +255,11 @@ func writeJSON(w io.Writer, r Run, opts ReportOptions) error {
 		// Always present, empty for a single-target run, so a consumer can index
 		// it without a nil check.
 		"by_request": breakdownJSON(r.ByRequest),
+		// count + skipped is the whole population; warmup is what excluded the
+		// difference. Both are always present so a CI consumer can assert on the
+		// measured population without branching on whether warmup was set.
+		"warmup":  r.Warmup.String(),
+		"skipped": r.Skipped,
 	}
 
 	buf, err := json.MarshalIndent(out, "", "  ")

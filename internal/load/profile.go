@@ -31,6 +31,7 @@ type Overrides struct {
 	Concurrency int
 	Pacing      string
 	AllowLag    bool
+	Warmup      time.Duration
 }
 
 // Profile is a fully resolved load configuration: the load: block with CLI
@@ -46,6 +47,9 @@ type Profile struct {
 	Assertions  bool
 	Thresholds  request.Thresholds
 	AllowLag    bool
+
+	// Warmup is excluded from the report, not from the load. See LoadSpec.Warmup.
+	Warmup time.Duration
 }
 
 // ResolveProfile overlays CLI overrides onto a load: block and validates the
@@ -81,6 +85,9 @@ func ResolveProfile(spec *request.LoadSpec, ov Overrides) (*Profile, error) {
 	if ov.Pacing != "" {
 		merged.Pacing = ov.Pacing
 	}
+	if ov.Warmup > 0 {
+		merged.Warmup = request.NewDuration(ov.Warmup)
+	}
 
 	if err := merged.Validate("load"); err != nil {
 		return nil, err
@@ -96,6 +103,7 @@ func ResolveProfile(spec *request.LoadSpec, ov Overrides) (*Profile, error) {
 		Pacing:      metronome.OpenLoop, // spec §3: quiver's default
 		Assertions:  merged.AssertionsEnabled(),
 		AllowLag:    ov.AllowLag,
+		Warmup:      merged.Warmup.Duration(),
 	}
 	if merged.Pacing == "closed" {
 		p.Pacing = metronome.ClosedLoop

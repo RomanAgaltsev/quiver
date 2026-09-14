@@ -141,7 +141,7 @@ func TestProgressWriterPrintsWindowPercentiles(t *testing.T) {
 
 	out := buf.String()
 	for _, want := range []string{"1000", "p50", "12", "p99", "80", "lag"} {
-		require.Containsf(t, out, want, "progress line %%q missing %%q", out, want)
+		require.Containsf(t, out, want, "progress line %q missing %q", out, want)
 	}
 }
 
@@ -318,4 +318,30 @@ func TestReportJSONCarriesClampStatePerSeries(t *testing.T) {
 	// The total's clamp count is zero here; the series' is not. That asymmetry
 	// is the whole reason per-series clamp state is reported.
 	require.Zero(t, r.Snapshot.Clamped)
+}
+
+func TestReportStatesTheMeasuredPopulation(t *testing.T) {
+	r := sampleRun()
+	r.Snapshot.Count = 800
+	r.Warmup = 3 * time.Second
+	r.Skipped = 200
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteReport(&buf, r, ReportOptions{
+		Format: "pretty", Redactor: secret.NewRedactor(nil)}))
+
+	out := buf.String()
+	// Measured N of M must be auditable: Count + Skipped is the whole
+	// population, so both numbers and the total have to appear.
+	for _, want := range []string{"800", "1000", "warmup"} {
+		require.Containsf(t, out, want, "report missing %q:\n%s", want, out)
+	}
+}
+
+func TestReportOmitsWarmupLineWhenUnset(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, WriteReport(&buf, sampleRun(), ReportOptions{
+		Format: "pretty", Redactor: secret.NewRedactor(nil)}))
+	require.NotContains(t, buf.String(), "warmup",
+		"a run without --warmup mentioned warmup")
 }

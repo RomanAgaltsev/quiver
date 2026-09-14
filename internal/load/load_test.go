@@ -284,3 +284,88 @@ func TestValidateTargetsAllowsAFullBlockOnTheFirstTarget(t *testing.T) {
 	}
 	require.NoError(t, ValidateTargets(targets))
 }
+
+// A single-target run is not broken down, so it must not pay for a breakdown.
+// Every recorder in the tree runs synchronously on the goroutine draining the
+// result channel, so a second aggregate per Result is time not spent receiving
+// — and on a loaded machine that raises schedule lag enough to trip the exit-3
+// trust verdict. The report omits a one-row section anyway.
+func TestSingleTargetRunIsNotBrokenDown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	target := &request.Request{Name: "ping", Protocol: request.ProtocolHTTP, Path: "ping.yaml",
+		HTTP: &request.HTTPSpec{Method: "GET", URL: srv.URL}}
+	p, err := ResolveProfile(&request.LoadSpec{Rate: 500, Requests: 20}, Overrides{})
+	require.NoError(t, err)
+
+	run, err := Execute(context.Background(), Options{
+		Registry: reg(), Targets: []*request.Request{target},
+		Resolved: resolved(), Profile: p,
+	})
+	require.NoError(t, err)
+	require.Empty(t, run.ByRequest, "a single-target run built a per-request breakdown")
+}
+
+// A folder target is what the breakdown exists for: one p99 over two endpoints
+// describes neither.
+func TestFolderTargetIsBrokenDownPerRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	mk := func(name string) *request.Request {
+		return &request.Request{Name: name, Protocol: request.ProtocolHTTP, Path: name + ".yaml",
+			HTTP: &request.HTTPSpec{Method: "GET", URL: srv.URL + "/" + name}}
+	}
+	p, err := ResolveProfile(&request.LoadSpec{Rate: 500, Requests: 40}, Overrides{})
+	require.NoError(t, err)
+
+	run, err := Execute(context.Background(), Options{
+		Registry: reg(), Targets: []*request.Request{mk("alpha"), mk("beta")},
+		Resolved: resolved(), Profile: p,
+	})
+	require.NoError(t, err)
+	require.Len(t, run.ByRequest, 2, "a folder target was not broken down")
+	require.Equal(t, "alpha", run.ByRequest[0].Name)
+	require.Equal(t, "beta", run.ByRequest[1].Name)
+
+	var sum int64
+	for _, s := range run.ByRequest {
+		sum += s.Snap.Count
+	}
+	require.Equal(t, run.Snapshot.Count, sum,
+		"series counts must sum to the total; a Result went unattributed")
+}
+
+// --warmup keeps the cold start out of the REPORT without keeping it out of the
+// load: Count + Skipped is the whole population, and the traffic is still sent.
+func TestWarmupExcludesAPrefixAndStaysAuditable(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	target := &request.Request{Name: "ping", Protocol: request.ProtocolHTTP, Path: "ping.yaml",
+		HTTP: &request.HTTPSpec{Method: "GET", URL: srv.URL}}
+	p, err := ResolveProfile(
+		&request.LoadSpec{Rate: 200, Duration: request.NewDuration(400 * time.Millisecond)},
+		Overrides{Warmup: 150 * time.Millisecond})
+	require.NoError(t, err)
+
+	run, err := Execute(context.Background(), Options{
+		Registry: reg(), Targets: []*request.Request{target},
+		Resolved: resolved(), Profile: p,
+	})
+	require.NoError(t, err)
+
+	require.Positive(t, run.Skipped, "the warmup excluded nothing")
+	require.Equal(t, hits.Load(), run.Snapshot.Count+run.Skipped,
+		"Count + Skipped must be the whole population the target actually served")
+	require.Equal(t, 150*time.Millisecond, run.Warmup)
+}
