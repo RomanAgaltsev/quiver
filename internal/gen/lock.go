@@ -150,3 +150,11 @@ func (a action) String() string {
 		return "unknown"
 	}
 }
+
+// SetSource records which document a lock was generated from. The hash is what
+// lets a later run notice the spec itself changed, independently of whether any
+// output did.
+func (l *Lock) SetSource(path string, spec []byte) {
+	l.Source = path
+	l.SourceHash = hashBytes(spec)
+}

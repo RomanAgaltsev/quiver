@@ -64,7 +64,7 @@ func TestWriteIsIdempotent(t *testing.T) {
 	files := []GeneratedFile{{Path: "pets/listPets.yaml", Req: sampleRequest()}}
 
 	lock := newLock("spec.yaml", "sha256:abc")
-	r1, err := Write(dir, files, collectionFile{}, lock, false)
+	r1, err := Write(dir, files, Collection{}, lock, false)
 	require.NoError(t, err)
 	require.Contains(t, r1.Written, "pets/listPets.yaml")
 
@@ -73,7 +73,7 @@ func TestWriteIsIdempotent(t *testing.T) {
 	firstLock, err := os.ReadFile(filepath.Join(dir, LockPath))
 	require.NoError(t, err)
 
-	r2, err := Write(dir, files, collectionFile{}, lock, false)
+	r2, err := Write(dir, files, Collection{}, lock, false)
 	require.NoError(t, err)
 	require.Empty(t, r2.SkippedEdited, "an unmodified re-run must not report skips")
 	require.Empty(t, r2.Written, "a re-run that changes nothing has written nothing")
@@ -93,11 +93,11 @@ func TestWriteReportsOrphansAndNeverDeletesThem(t *testing.T) {
 	dir := t.TempDir()
 	lock := newLock("spec.yaml", "sha256:abc")
 
-	_, err := Write(dir, []GeneratedFile{{Path: "gone.yaml", Req: sampleRequest()}}, collectionFile{}, lock, false)
+	_, err := Write(dir, []GeneratedFile{{Path: "gone.yaml", Req: sampleRequest()}}, Collection{}, lock, false)
 	require.NoError(t, err)
 
 	// The operation leaves the spec: nothing is generated for it this time.
-	rep, err := Write(dir, nil, collectionFile{}, lock, false)
+	rep, err := Write(dir, nil, Collection{}, lock, false)
 	require.NoError(t, err)
 	require.Contains(t, rep.Orphaned, "gone.yaml")
 	require.FileExists(t, filepath.Join(dir, "gone.yaml"),
@@ -109,14 +109,14 @@ func TestWriteSkipsAHandEditedFileAndReportsIt(t *testing.T) {
 	files := []GeneratedFile{{Path: "pets/listPets.yaml", Req: sampleRequest()}}
 	lock := newLock("spec.yaml", "sha256:abc")
 
-	_, err := Write(dir, files, collectionFile{}, lock, false)
+	_, err := Write(dir, files, Collection{}, lock, false)
 	require.NoError(t, err)
 
 	edited := filepath.Join(dir, "pets/listPets.yaml")
 	mine := []byte("name: listPets\nprotocol: http\nhttp:\n  method: GET\n  url: \"{{base}}/pets?mine=1\"\n")
 	require.NoError(t, os.WriteFile(edited, mine, 0o644))
 
-	rep, err := Write(dir, files, collectionFile{}, lock, false)
+	rep, err := Write(dir, files, Collection{}, lock, false)
 	require.NoError(t, err)
 	require.Contains(t, rep.SkippedEdited, "pets/listPets.yaml")
 
@@ -125,7 +125,7 @@ func TestWriteSkipsAHandEditedFileAndReportsIt(t *testing.T) {
 	require.Equal(t, mine, after, "the promise is that an edit is never overwritten")
 
 	// ...and --force is how you ask for it to be.
-	rep, err = Write(dir, files, collectionFile{}, lock, true)
+	rep, err = Write(dir, files, Collection{}, lock, true)
 	require.NoError(t, err)
 	require.Contains(t, rep.Written, "pets/listPets.yaml")
 	after, err = os.ReadFile(edited)
@@ -138,11 +138,11 @@ func TestWriteRestoresADeletedGeneratedFile(t *testing.T) {
 	files := []GeneratedFile{{Path: "pets/listPets.yaml", Req: sampleRequest()}}
 	lock := newLock("spec.yaml", "sha256:abc")
 
-	_, err := Write(dir, files, collectionFile{}, lock, false)
+	_, err := Write(dir, files, Collection{}, lock, false)
 	require.NoError(t, err)
 	require.NoError(t, os.Remove(filepath.Join(dir, "pets/listPets.yaml")))
 
-	rep, err := Write(dir, files, collectionFile{}, lock, false)
+	rep, err := Write(dir, files, Collection{}, lock, false)
 	require.NoError(t, err)
 	require.Contains(t, rep.Restored, "pets/listPets.yaml")
 	require.FileExists(t, filepath.Join(dir, "pets/listPets.yaml"))
@@ -155,7 +155,7 @@ func TestWriteLeavesAnUnmanagedFileAlone(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "pets/listPets.yaml"), mine, 0o644))
 
 	files := []GeneratedFile{{Path: "pets/listPets.yaml", Req: sampleRequest()}}
-	rep, err := Write(dir, files, collectionFile{}, newLock("spec.yaml", "sha256:abc"), false)
+	rep, err := Write(dir, files, Collection{}, newLock("spec.yaml", "sha256:abc"), false)
 	require.NoError(t, err)
 	require.Contains(t, rep.SkippedUnmanaged, "pets/listPets.yaml")
 
@@ -172,7 +172,7 @@ func TestLockRoundTrips(t *testing.T) {
 	lock := newLock("openapi.yaml", "sha256:abc")
 	lock.Generator = "qv test"
 
-	_, err := Write(dir, files, collectionFile{}, lock, false)
+	_, err := Write(dir, files, Collection{}, lock, false)
 	require.NoError(t, err)
 
 	reloaded, err := LoadLock(dir)
@@ -182,7 +182,7 @@ func TestLockRoundTrips(t *testing.T) {
 	require.Equal(t, "listPets", reloaded.Files["pets/listPets.yaml"].OperationID)
 	require.Equal(t, lock.Files["pets/listPets.yaml"].Hash, reloaded.Files["pets/listPets.yaml"].Hash)
 
-	rep, err := Write(dir, files, collectionFile{}, reloaded, false)
+	rep, err := Write(dir, files, Collection{}, reloaded, false)
 	require.NoError(t, err)
 	require.False(t, rep.Changed())
 }

@@ -12,12 +12,12 @@ import (
 	"github.com/RomanAgaltsev/quiver/internal/request"
 )
 
-// collectionFile is the generated collection.yaml.
+// Collection is the generated collection.yaml.
 //
 // It is a narrow mirror of collection.Collection rather than that type itself:
 // the generator has no business emitting `fail_on_error` or a collection-wide
 // `timeout`, and marshalling the full struct would write both on every run.
-type collectionFile struct {
+type Collection struct {
 	Defaults map[string]string              `yaml:"defaults"`
 	Auth     map[string]request.AuthProfile `yaml:"auth,omitempty"`
 
@@ -43,8 +43,8 @@ func (s security) ownsHeader(name string) bool { return s.headers[strings.ToLowe
 // mapCollection turns the document's servers and security schemes into the
 // collection file, the security index each operation is mapped against, and
 // the notes that become the generation report.
-func mapCollection(doc *v3high.Document) (collectionFile, security, []string) {
-	c := collectionFile{Defaults: map[string]string{}}
+func mapCollection(doc *v3high.Document) (Collection, security, []string) {
+	c := Collection{Defaults: map[string]string{}}
 	sec := security{profiles: map[string]string{}, headers: map[string]bool{}}
 	var notes []string
 
@@ -68,7 +68,7 @@ var serverVarPattern = regexp.MustCompile(`\{([^{}]+)\}`)
 // written into the file as a commented alternative: a spec with several servers
 // is describing environments, and choosing between someone's staging and
 // production for them is not the generator's call.
-func mapServers(servers []*v3high.Server, c *collectionFile) (string, []string) {
+func mapServers(servers []*v3high.Server, c *Collection) (string, []string) {
 	if len(servers) == 0 {
 		// The specification's own default when `servers` is absent is "/", which
 		// is not a URL anything can be sent to. A template is honest about it.
@@ -126,7 +126,7 @@ func serverURL(s *v3high.Server) string {
 // Every credential is an {{env:...}} reference and never a literal. A generator
 // that wrote a placeholder secret into a git-diffable file would be teaching the
 // wrong habit at the first moment a user sees its output.
-func mapSecuritySchemes(doc *v3high.Document, c *collectionFile, sec *security) []string {
+func mapSecuritySchemes(doc *v3high.Document, c *Collection, sec *security) []string {
 	if doc.Components == nil || doc.Components.SecuritySchemes == nil {
 		return nil
 	}
@@ -156,7 +156,7 @@ func mapSecuritySchemes(doc *v3high.Document, c *collectionFile, sec *security) 
 
 // mapScheme maps one security scheme, returning the profile to write, the
 // header that profile will own, and a note for anything not expressible.
-func mapScheme(name string, s *v3high.SecurityScheme, c *collectionFile) (*request.AuthProfile, string, string) {
+func mapScheme(name string, s *v3high.SecurityScheme, c *Collection) (*request.AuthProfile, string, string) {
 	env := envPrefix(name)
 
 	switch strings.ToLower(s.Type) {

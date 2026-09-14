@@ -21,7 +21,7 @@ func mustLoad(t *testing.T, path string) *v3high.Document {
 }
 
 // mustMapCollection maps a fixture's collection-level output.
-func mustMapCollection(t *testing.T, path string) (collectionFile, security, []string) {
+func mustMapCollection(t *testing.T, path string) (Collection, security, []string) {
 	t.Helper()
 	return mapCollection(mustLoad(t, path))
 }
@@ -34,7 +34,7 @@ func mapOne(t *testing.T, path, method, opPath string) (request.Request, []strin
 	t.Helper()
 	doc := mustLoad(t, path)
 	_, sec, _ := mapCollection(doc)
-	for _, ref := range Operations(doc) {
+	for _, ref := range operations(doc) {
 		if ref.method == method && ref.path == opPath {
 			return mapOperation(ref, sec)
 		}

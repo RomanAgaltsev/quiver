@@ -68,6 +68,7 @@ func newRootCmd() *cobra.Command {
 		newNewCmd(),
 		newEnvCmd(),
 		newHistoryCmd(),
+		newGenCmd(),
 	)
 
 	return root

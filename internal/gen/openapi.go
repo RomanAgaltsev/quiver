@@ -76,12 +76,12 @@ type operationRef struct {
 	pathParams []*v3high.Parameter
 }
 
-// Operations enumerates every operation in the document, in spec order.
+// operations enumerates every operation in the document, in spec order.
 //
 // Order is the document's own insertion order rather than sorted: it is the
 // order the spec's author chose, and it makes the generation report read like
 // the file the user is looking at.
-func Operations(doc *v3high.Document) []operationRef {
+func operations(doc *v3high.Document) []operationRef {
 	if doc == nil || doc.Paths == nil || doc.Paths.PathItems == nil {
 		return nil
 	}
@@ -164,12 +164,12 @@ func slugify(s string) string { return strings.ToLower(sanitize(s)) }
 // It is pure. Nothing here reads or writes the filesystem, which is why the
 // golden tests need no temp directory and --check can run the whole thing in
 // memory before deciding whether anything would change.
-func Generate(doc *v3high.Document) (collectionFile, []GeneratedFile, []string) {
+func Generate(doc *v3high.Document) (Collection, []GeneratedFile, []string) {
 	coll, sec, notes := mapCollection(doc)
 
 	var files []GeneratedFile
 	seen := map[string]int{}
-	for _, ref := range Operations(doc) {
+	for _, ref := range operations(doc) {
 		req, opNotes := mapOperation(ref, sec)
 		notes = append(notes, opNotes...)
 

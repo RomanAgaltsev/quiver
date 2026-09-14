@@ -68,7 +68,7 @@ func TestFilePathSlugifiesAwkwardTags(t *testing.T) {
 
 func TestOperationsEnumeratesEveryMethod(t *testing.T) {
 	doc := mustLoad(t, "testdata/multi-method.yaml")
-	ops := Operations(doc)
+	ops := operations(doc)
 	require.Len(t, ops, 3)
 	methods := []string{}
 	for _, o := range ops {

@@ -49,12 +49,17 @@ type plannedFile struct {
 	onDisk bool
 }
 
-// Plan decides what a generation would do, without touching anything.
+// Plan reports what a generation would do, without touching anything.
 //
-// Write is Plan plus the writes, which is what lets --check run the whole
-// generation in memory and compare: a --check that used a different code path
-// from the real run would eventually disagree with it.
-func Plan(dir string, files []GeneratedFile, c collectionFile, lock *Lock, force bool) ([]plannedFile, *Report, error) {
+// Write is Plan plus the writes — the same code path — which is what makes
+// --check trustworthy: a --check with its own logic would eventually disagree
+// with the run it is supposed to predict.
+func Plan(dir string, files []GeneratedFile, c Collection, lock *Lock, force bool) (*Report, error) {
+	_, rep, err := plan(dir, files, c, lock, force)
+	return rep, err
+}
+
+func plan(dir string, files []GeneratedFile, c Collection, lock *Lock, force bool) ([]plannedFile, *Report, error) {
 	rep := &Report{}
 
 	coll, err := marshalCollection(c)
@@ -134,8 +139,8 @@ func orphans(lock *Lock, planned []plannedFile) []string {
 // Write generates the tree and returns what it did. The lockfile is written
 // last and only after every file write succeeded, so a run that failed halfway
 // never leaves a lock claiming files it did not write.
-func Write(dir string, files []GeneratedFile, c collectionFile, lock *Lock, force bool) (*Report, error) {
-	planned, rep, err := Plan(dir, files, c, lock, force)
+func Write(dir string, files []GeneratedFile, c Collection, lock *Lock, force bool) (*Report, error) {
+	planned, rep, err := plan(dir, files, c, lock, force)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +242,7 @@ func marshalRequest(r request.Request) ([]byte, error) {
 
 // marshalCollection renders collection.yaml, with the commented alternatives
 // appended after the mapping the schema can express.
-func marshalCollection(c collectionFile) ([]byte, error) {
+func marshalCollection(c Collection) ([]byte, error) {
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return nil, fmt.Errorf("encode %s: %w", CollectionFileName, err)
