@@ -1,0 +1,15 @@
+name: Kinds/Choose
+protocol: grpc
+grpc:
+  target: "{{grpc_target}}"
+  method: pkg.Kinds/Choose
+  message: |-
+    {
+      "always": "",
+      "byId": ""
+    }
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: OK

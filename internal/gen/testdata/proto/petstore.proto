@@ -6,6 +6,9 @@ import "google/protobuf/timestamp.proto";
 message GetPetRequest {
   string pet_id = 1;
   bool include_photos = 2;
+  // A well-known type on a REQUEST message, so a golden pins its protojson
+  // form: a Timestamp is an RFC 3339 string, never an object.
+  google.protobuf.Timestamp as_of = 3;
 }
 message Pet {
   string name = 1;

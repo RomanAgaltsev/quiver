@@ -1,0 +1,20 @@
+name: Deep/Go
+protocol: grpc
+grpc:
+  target: "{{grpc_target}}"
+  method: pkg.Deep/Go
+  message: |-
+    {
+      "l2": {
+        "l3": {
+          "l4": {
+            "v": ""
+          }
+        }
+      }
+    }
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: OK

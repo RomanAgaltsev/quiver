@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/RomanAgaltsev/quiver/internal/transport/grpcx"
 )
 
 // -update rewrites the golden trees. Review the diff when you use it: a golden
@@ -111,4 +113,51 @@ func keysOf(m map[string][]byte) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// goldenProtoFixtures are the .proto files whose whole emitted tree is pinned.
+// Between them they cover every scalar kind, repeated and map fields, an enum,
+// a oneof, a well-known type, deep nesting, a self-referential message and a
+// streaming RPC that must not appear at all.
+var goldenProtoFixtures = []string{"petstore", "kinds", "deep", "cyclic"}
+
+func TestGoldenProtoTrees(t *testing.T) {
+	for _, fixture := range goldenProtoFixtures {
+		t.Run(fixture, func(t *testing.T) {
+			infos, err := grpcx.EnumerateFromProtoFiles([]string{protoFixture(fixture + ".proto")})
+			require.NoError(t, err)
+
+			// No ProtoFiles on purpose: a generated proto_files entry is a path
+			// on the machine that ran the generator, and pinning one would make
+			// the goldens fail everywhere else.
+			files, _, err := MapProto(infos, ProtoOptions{Depth: DefaultProtoDepth})
+			require.NoError(t, err)
+
+			dir := t.TempDir()
+			_, err = Write(dir, files, ProtoCollection("localhost:50051"),
+				newLock(fixture+".proto", "sha256:fixed"), false)
+			require.NoError(t, err)
+
+			got := readTree(t, dir, ".qv")
+			goldenDir := filepath.Join("testdata", "golden", "proto", fixture)
+
+			if *update {
+				require.NoError(t, os.RemoveAll(goldenDir))
+				for path, data := range got {
+					full := filepath.Join(goldenDir, filepath.FromSlash(path))
+					require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+					require.NoError(t, os.WriteFile(full, data, 0o644))
+				}
+				t.Logf("updated %d file(s) under %s — read the diff", len(got), goldenDir)
+				return
+			}
+
+			want := readTree(t, goldenDir)
+			require.Equal(t, keysOf(want), keysOf(got),
+				"the emitted file list changed; re-run with -update and read the diff")
+			for path, data := range want {
+				require.Equal(t, string(data), string(got[path]), path)
+			}
+		})
+	}
 }

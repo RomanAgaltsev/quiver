@@ -1,0 +1,25 @@
+name: Kinds/Do
+protocol: grpc
+grpc:
+  target: "{{grpc_target}}"
+  method: pkg.Kinds/Do
+  message: |-
+    {
+      "b": false,
+      "big": "0",
+      "d": 0,
+      "inner": {
+        "v": ""
+      },
+      "m": {},
+      "n": 0,
+      "raw": "",
+      "rep": [],
+      "s": "",
+      "status": "STATUS_UNKNOWN"
+    }
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: OK
