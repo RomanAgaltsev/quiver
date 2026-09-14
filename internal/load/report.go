@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +20,37 @@ type Run struct {
 	Profile  *Profile
 	Snapshot metronome.Snapshot
 	Eval     Evaluation
+
+	// ByRequest is one entry per request in a folder target, sorted by name.
+	// Empty for a run that was never broken down.
+	ByRequest []requestStats
+}
+
+// requestStats is one endpoint's slice of a load run.
+type requestStats struct {
+	Name string
+	Snap metronome.Snapshot
+}
+
+// breakdown reads the per-request series back off the LabeledStats, sorted by
+// name so text and JSON output are stable between runs.
+//
+// The label it keys on is the one runner.go has stamped since v1.1.0. Until the
+// pin reached metronome v0.6 there was nothing that could read it back, so a
+// folder target reported one p99 describing no endpoint in it.
+//
+// Series returns the child recorders rather than their snapshots, so each is
+// snapshotted here.
+func breakdown(ls *metronome.LabeledStats[*metronome.Stats]) []requestStats {
+	series := ls.Series()
+	out := make([]requestStats, 0, len(series))
+	for name, child := range series {
+		out = append(out, requestStats{Name: name, Snap: child.Snapshot()})
+	}
+	slices.SortFunc(out, func(a, b requestStats) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return out
 }
 
 // ReportOptions controls report rendering. Redactor may be nil (redacts nothing).
@@ -81,6 +113,8 @@ func writePretty(w io.Writer, r Run, opts ReportOptions) error {
 	fmt.Fprintf(&b, "schedule lag    max %s  (budget %s)   %s\n",
 		ms(snap.MaxScheduleLag), r.Profile.LagBudget(), lagState)
 
+	writeBreakdown(&b, r.ByRequest)
+
 	if len(r.Eval.Thresholds) > 0 || len(r.Eval.Trust) > 0 {
 		b.WriteString("\n")
 	}
@@ -102,6 +136,61 @@ func writePretty(w io.Writer, r Run, opts ReportOptions) error {
 
 	_, err := io.WriteString(w, red.String(b.String()))
 	return err
+}
+
+// writeBreakdown prints the per-endpoint section.
+//
+// It is omitted for fewer than two series: a single-target run's only row
+// repeats the total line above it, and a section that adds nothing trains the
+// reader to skip the one that does.
+//
+// A row carries its own clamp marker rather than deferring to the total's. One
+// slow endpoint clamping its own histogram while the total's is fine is a more
+// likely shape than the total clamping, and a clamped percentile understates
+// reality — reporting the number without that is the failure this exists to
+// prevent.
+func writeBreakdown(b *strings.Builder, rows []requestStats) {
+	if len(rows) < 2 {
+		return
+	}
+	fmt.Fprintf(b, "\nper request     %8s %8s %8s %8s\n", "reqs", "err", "p50", "p99")
+	for _, row := range rows {
+		mark := ""
+		if row.Snap.Clamped > 0 || row.Snap.CorrectedClamped > 0 {
+			mark = "  ! clamped, percentiles understate"
+		}
+		fmt.Fprintf(b, "  %-12s %8d %8d %8s %8s%s\n",
+			truncate(row.Name, 12), row.Snap.Count, row.Snap.Errors,
+			ms(row.Snap.P50), ms(row.Snap.P99), mark)
+	}
+}
+
+// truncate keeps the breakdown's columns aligned when a request name is longer
+// than its cell.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
+}
+
+func breakdownJSON(rows []requestStats) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]any{
+			"name": row.Name, "count": row.Snap.Count, "errors": row.Snap.Errors,
+			"saturated": row.Snap.Saturated,
+			"p50":       row.Snap.P50.String(), "p95": row.Snap.P95.String(),
+			"p99": row.Snap.P99.String(), "max": row.Snap.Max.String(),
+			"corrected_p99": row.Snap.CorrectedP99.String(),
+			// Per-series clamp state is reported even when the total's is zero.
+			"clamped": row.Snap.Clamped, "corrected_clamped": row.Snap.CorrectedClamped,
+		})
+	}
+	return out
 }
 
 func writeJSON(w io.Writer, r Run, opts ReportOptions) error {
@@ -143,6 +232,9 @@ func writeJSON(w io.Writer, r Run, opts ReportOptions) error {
 		"attempted_rps": r.Eval.AttemptedRPS,
 		"thresholds":    verdictsJSON(r.Eval.Thresholds),
 		"trust":         verdictsJSON(r.Eval.Trust),
+		// Always present, empty for a single-target run, so a consumer can index
+		// it without a nil check.
+		"by_request": breakdownJSON(r.ByRequest),
 	}
 
 	buf, err := json.MarshalIndent(out, "", "  ")

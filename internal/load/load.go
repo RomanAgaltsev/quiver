@@ -124,16 +124,17 @@ func Execute(ctx context.Context, opts Options) (Run, error) {
 		return Run{}, err
 	}
 
-	snap, err := drive(ctx, opts, runnerImpl)
+	snap, byReq, err := drive(ctx, opts, runnerImpl)
 	if err != nil {
 		return Run{}, err
 	}
 
 	return Run{
-		Target:   target,
-		Profile:  opts.Profile,
-		Snapshot: snap,
-		Eval:     Evaluate(snap, opts.Profile),
+		Target:    target,
+		Profile:   opts.Profile,
+		Snapshot:  snap,
+		Eval:      Evaluate(snap, opts.Profile),
+		ByRequest: byReq,
 	}, nil
 }
 
@@ -214,7 +215,7 @@ func describeTarget(r *request.Request, rr *core.ResolvedRequest) string {
 // The result channel is drained to completion on every path. metronome's
 // contract is explicit: abandoning a live channel leaves its workers blocked on
 // the send and leaks them for the lifetime of the process.
-func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Snapshot, error) {
+func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Snapshot, []requestStats, error) {
 	p := opts.Profile
 
 	if p.Duration > 0 {
@@ -233,11 +234,22 @@ func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Sna
 	}
 
 	total := metronome.NewStatsRange(statsLow, statsHigh, statsSigfigs)
+
+	// Keyed on the label runner.go stamps on every Result. The series count is
+	// the number of request files in the target folder — small and known — so
+	// Labeled's MaxSeries cap is left at its default rather than configured.
+	byReq := metronome.NewLabeledStats(metronome.Labeled[*metronome.Stats]{
+		Key: "request",
+		New: func() *metronome.Stats {
+			return metronome.NewStatsRange(statsLow, statsHigh, statsSigfigs)
+		},
+	})
+
 	results := d.Run(ctx)
 
 	if opts.Progress == nil {
-		metronome.Drain(results, total)
-		return total.Snapshot(), nil
+		metronome.Drain(results, metronome.Multi(total, byReq))
+		return total.Snapshot(), breakdown(byReq), nil
 	}
 
 	interval := opts.ProgressInterval
@@ -258,7 +270,7 @@ func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Sna
 		Clock:   opts.Clock,
 	})
 
-	sink := metronome.Multi(total, live)
+	sink := metronome.Multi(total, byReq, live)
 
 	pw := newProgressWriter(opts.Progress, interval)
 	ticker := time.NewTicker(interval)
@@ -273,7 +285,7 @@ func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Sna
 		select {
 		case res, ok := <-results:
 			if !ok {
-				return total.Snapshot(), nil
+				return total.Snapshot(), breakdown(byReq), nil
 			}
 			sink.Record(res)
 		case <-ticker.C:

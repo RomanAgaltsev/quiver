@@ -221,3 +221,101 @@ func TestPrettyReportHonoursTheColorOption(t *testing.T) {
 	require.Contains(t, coloured.String(), "\x1b[")
 	require.Contains(t, coloured.String(), "PASS")
 }
+
+// --- Task 3: the per-endpoint breakdown -------------------------------------
+
+func newByRequest() *metronome.LabeledStats[*metronome.Stats] {
+	return metronome.NewLabeledStats(metronome.Labeled[*metronome.Stats]{
+		Key: "request",
+		New: func() *metronome.Stats {
+			return metronome.NewStatsRange(statsLow, statsHigh, statsSigfigs)
+		},
+	})
+}
+
+func TestBreakdownIsSortedAndComplete(t *testing.T) {
+	ls := newByRequest()
+
+	base := time.Now()
+	rec := func(name string, lat time.Duration, n int) {
+		for range n {
+			ls.Record(metronome.Result{
+				Start: base, Scheduled: base, Latency: lat,
+				Labels: map[string]string{"request": name},
+			})
+		}
+	}
+	rec("search", 200*time.Millisecond, 25)
+	rec("list", 10*time.Millisecond, 75)
+
+	got := breakdown(ls)
+	require.Len(t, got, 2)
+	require.Equal(t, "list", got[0].Name, "breakdown is not sorted by name")
+	require.Equal(t, "search", got[1].Name)
+	require.Equal(t, int64(75), got[0].Snap.Count)
+	require.Equal(t, int64(25), got[1].Snap.Count)
+	// The whole point: the slow endpoint's p99 must not be hidden by the total.
+	require.Greater(t, got[1].Snap.P99, got[0].Snap.P99,
+		"search p99 should exceed list p99; a folder total describes neither")
+}
+
+func TestReportTextIncludesPerRequestRows(t *testing.T) {
+	r := sampleRun()
+	r.ByRequest = []requestStats{
+		{Name: "list", Snap: metronome.Snapshot{Count: 75, P99: 20 * time.Millisecond}},
+		{Name: "search", Snap: metronome.Snapshot{Count: 25, P99: 400 * time.Millisecond}},
+	}
+	var buf bytes.Buffer
+	require.NoError(t, WriteReport(&buf, r, ReportOptions{
+		Format: "pretty", Redactor: secret.NewRedactor(nil)}))
+
+	out := buf.String()
+	for _, want := range []string{"per request", "list", "search", "400ms"} {
+		require.Containsf(t, out, want, "text report missing %q:\n%s", want, out)
+	}
+}
+
+func TestReportTextOmitsBreakdownForASingleTarget(t *testing.T) {
+	r := sampleRun()
+	r.ByRequest = []requestStats{{Name: "only", Snap: metronome.Snapshot{Count: 100}}}
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteReport(&buf, r, ReportOptions{
+		Format: "pretty", Redactor: secret.NewRedactor(nil)}))
+	require.NotContains(t, buf.String(), "per request",
+		"a single-target run printed a breakdown; it repeats the total")
+}
+
+func TestReportJSONCarriesClampStatePerSeries(t *testing.T) {
+	// Clamped means the percentiles understate reality. Per series this matters
+	// more than for the total: one slow endpoint clamping its own histogram
+	// while the total is fine is the likelier shape.
+	r := sampleRun()
+	// Already sorted, because breakdown() sorts and this is what it produces.
+	// The JSON writer renders the slice order it is given rather than sorting
+	// again; TestBreakdownIsSortedAndComplete is what pins the ordering.
+	r.ByRequest = []requestStats{
+		{Name: "fast", Snap: metronome.Snapshot{Count: 90}},
+		{Name: "slow", Snap: metronome.Snapshot{Count: 10, Clamped: 4}},
+	}
+	var buf bytes.Buffer
+	require.NoError(t, WriteReport(&buf, r, ReportOptions{
+		Format: "json", Redactor: secret.NewRedactor(nil)}))
+
+	var got struct {
+		ByRequest []struct {
+			Name             string `json:"name"`
+			Count            int64  `json:"count"`
+			Clamped          int64  `json:"clamped"`
+			CorrectedClamped int64  `json:"corrected_clamped"`
+		} `json:"by_request"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	require.Len(t, got.ByRequest, 2)
+	require.Equal(t, "slow", got.ByRequest[1].Name)
+	require.Equal(t, int64(4), got.ByRequest[1].Clamped,
+		"JSON breakdown dropped per-series clamp state")
+	// The total's clamp count is zero here; the series' is not. That asymmetry
+	// is the whole reason per-series clamp state is reported.
+	require.Zero(t, r.Snapshot.Clamped)
+}
