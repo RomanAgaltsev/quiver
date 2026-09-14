@@ -57,7 +57,14 @@ func TestExecuteDrivesTheTarget(t *testing.T) {
 
 	target := &request.Request{Name: "ping", Protocol: request.ProtocolHTTP, Path: "ping.yaml",
 		HTTP: &request.HTTPSpec{Method: "GET", URL: srv.URL}}
-	p, err := ResolveProfile(&request.LoadSpec{Rate: 500, Requests: 40}, Overrides{})
+	// AllowLag because this asserts a DELIVERY contract — 40 units offered, 40
+	// sent, 40 recorded — not that the machine can hold 500 rps. Over an 80ms
+	// run the lag budget is 25ms, and a loaded host misses that often enough to
+	// make the exit-code assertion a coin flip. It waives schedule_lag and
+	// nothing else, so saturation still fails this test, which is the verdict
+	// that would actually mean units went unsent.
+	p, err := ResolveProfile(&request.LoadSpec{Rate: 500, Requests: 40},
+		Overrides{AllowLag: true})
 	require.NoError(t, err)
 
 	run, err := Execute(context.Background(), Options{
@@ -67,6 +74,7 @@ func TestExecuteDrivesTheTarget(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(40), run.Snapshot.Count) // exact-delivery contract
 	require.Equal(t, int64(40), hits.Load())
+	require.Zero(t, run.Snapshot.Saturated, "no unit should have gone unsent")
 	require.Equal(t, 0, run.Eval.ExitCode)
 }
 
