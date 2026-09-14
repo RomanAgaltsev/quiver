@@ -1,0 +1,15 @@
+name: listPets
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/pets"
+  headers:
+    X-Request-Id: "{{X-Request-Id}}"
+  query:
+    limit: "10"
+    status: "{{status}}"
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

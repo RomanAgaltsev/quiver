@@ -1,0 +1,19 @@
+defaults:
+  base: https://api.example.com
+auth:
+  apiKeyAuth:
+    type: apikey
+    header: X-API-Key
+    key: "{{env:APIKEYAUTH_KEY}}"
+  basicAuth:
+    type: basic
+    username: "{{env:BASICAUTH_USERNAME}}"
+    password: "{{env:BASICAUTH_PASSWORD}}"
+  bearerAuth:
+    type: bearer
+    token: "{{env:BEARERAUTH_TOKEN}}"
+
+# the spec declares "oauth2Auth" (oauth2), which quiver cannot perform yet:
+#   oauth2Auth:
+#     type: bearer
+#     token: "{{env:OAUTH2AUTH_TOKEN}}"   # obtain the token out of band

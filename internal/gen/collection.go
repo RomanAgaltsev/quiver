@@ -102,6 +102,13 @@ func mapServers(servers []*v3high.Server, c *Collection) (string, []string) {
 	if strings.Contains(urls[0], "{{") {
 		notes = append(notes, fmt.Sprintf(
 			"server URL %s has variables; supply them with -V or an environment file", urls[0]))
+	} else if !hasScheme(urls[0]) {
+		// A relative server URL ("/api/v3") is legal OpenAPI and means "wherever
+		// this document is served from" — which the generator does not know. Left
+		// unsaid, every generated request would fail with an unhelpful URL error.
+		notes = append(notes, fmt.Sprintf(
+			"server URL %q is relative to wherever the spec is hosted; "+
+				"set the real host with -V base=https://... or an environment file", urls[0]))
 	}
 	return urls[0], notes
 }
@@ -240,4 +247,12 @@ func sortedAuthNames(auth map[string]request.AuthProfile) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// hasScheme reports whether a URL names a protocol. A server URL without one is
+// relative to wherever the document is served from, which a generator run from
+// a local file cannot know.
+func hasScheme(u string) bool {
+	i := strings.Index(u, "://")
+	return i > 0 && !strings.ContainsAny(u[:i], "/?#")
 }

@@ -1,0 +1,10 @@
+name: listPets
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/pets"
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

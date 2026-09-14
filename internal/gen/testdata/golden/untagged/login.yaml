@@ -1,0 +1,10 @@
+name: login
+protocol: http
+http:
+  method: POST
+  url: "{{base}}/login"
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

@@ -1,0 +1,6 @@
+defaults:
+  base: https://api.example.com
+auth:
+  bearerAuth:
+    type: bearer
+    token: "{{env:BEARERAUTH_TOKEN}}"

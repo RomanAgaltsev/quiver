@@ -1,0 +1,5 @@
+defaults:
+  base: https://api.example.com/v1
+
+# alternative servers declared by the spec:
+#   base: "https://eu.staging.example.com/v1"

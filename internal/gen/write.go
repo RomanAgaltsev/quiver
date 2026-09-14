@@ -226,7 +226,11 @@ func sameBytes(path string, data []byte) bool {
 // the result straight back, because a file no executor accepts is the exact
 // failure this package exists to avoid and it is cheap to rule out here.
 func marshalRequest(r request.Request) ([]byte, error) {
-	data, err := yaml.Marshal(r)
+	// A JSON body is multi-line, and the default flow style escapes it onto one
+	// line — `body: "{\n  \"name\": ...}"`. That round-trips and is unreadable,
+	// which fails the thing the spec actually asks for: files a person is happy
+	// to own, and happy to read in a diff.
+	data, err := yaml.MarshalWithOptions(r, yaml.UseLiteralStyleIfMultiline(true))
 	if err != nil {
 		return nil, fmt.Errorf("encode request: %w", err)
 	}

@@ -1,0 +1,20 @@
+name: createPetRecursive
+protocol: http
+http:
+  method: POST
+  url: "{{base}}/pets-recursive"
+  headers:
+    Content-Type: application/json
+  body: |-
+    {
+      "friend": {
+        "friend": {},
+        "name": ""
+      },
+      "name": ""
+    }
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "201"

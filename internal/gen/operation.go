@@ -280,15 +280,47 @@ func mapBody(op *v3high.Operation) (string, []string) {
 	if mt.Schema == nil {
 		return "", nil
 	}
-	skeleton, truncated := schemaSkeleton(mt.Schema.Schema(), 0)
+	skeleton, truncated := schemaSkeleton(mt.Schema.Schema(), newSkeletonWalk())
 	if skeleton == nil {
 		return "", nil
 	}
 	body, notes := encodeJSON(skeleton)
 	if truncated {
-		notes = append(notes, "request body schema is recursive; the skeleton was cut short")
+		notes = append(notes, "request body schema is recursive; "+
+			"the repeating part was emitted as {} — fill it in by hand if the API needs it")
 	}
 	return body, notes
+}
+
+// skeletonWalk is the state schemaSkeleton carries down the tree: how deep it
+// is, and which schemas are already on the path above it.
+//
+// Depth alone is not enough. A self-referential schema (Pet.friend: Pet) would
+// otherwise be expanded to the cap, producing a body nested five Pets deep that
+// no API wants and no person would keep. Recognising that the schema is already
+// on the path stops it at the first repeat, where the truth is "and here it
+// begins again".
+type skeletonWalk struct {
+	depth int
+	seen  map[*base.Schema]bool
+}
+
+func newSkeletonWalk() skeletonWalk {
+	return skeletonWalk{seen: map[*base.Schema]bool{}}
+}
+
+// into returns the walk state for a child schema, and whether descending would
+// revisit a schema already on the path.
+func (w skeletonWalk) into(s *base.Schema) (skeletonWalk, bool) {
+	if w.seen[s] {
+		return w, true
+	}
+	next := skeletonWalk{depth: w.depth + 1, seen: make(map[*base.Schema]bool, len(w.seen)+1)}
+	for k := range w.seen {
+		next.seen[k] = true
+	}
+	next.seen[s] = true
+	return next, false
 }
 
 // nodeValue decodes any YAML node into a Go value, for a body example that is
@@ -319,13 +351,21 @@ func encodeJSON(v any) (string, []string) {
 //
 // It reports whether recursion was cut short, so the report can say so rather
 // than letting a silently truncated body look complete.
-func schemaSkeleton(s *base.Schema, depth int) (any, bool) {
+func schemaSkeleton(s *base.Schema, walk skeletonWalk) (any, bool) {
 	if s == nil {
 		return nil, false
 	}
-	if depth > maxSkeletonDepth {
+	if walk.depth > maxSkeletonDepth {
 		return map[string]any{}, true
 	}
+	// The schema is already on the path above: expanding it again would add a
+	// level of nesting that says nothing new. `{}` says "and here it repeats",
+	// which is the honest skeleton for a recursive type.
+	next, cycle := walk.into(s)
+	if cycle {
+		return map[string]any{}, true
+	}
+	walk = next
 
 	// A composed schema has no type of its own. allOf is the composition that
 	// can be merged; oneOf/anyOf are a choice, and the first branch is the only
@@ -337,7 +377,7 @@ func schemaSkeleton(s *base.Schema, depth int) (any, bool) {
 			if proxy == nil {
 				continue
 			}
-			part, cut := schemaSkeleton(proxy.Schema(), depth)
+			part, cut := schemaSkeleton(proxy.Schema(), walk)
 			truncated = truncated || cut
 			if m, ok := part.(map[string]any); ok {
 				for k, v := range m {
@@ -349,7 +389,7 @@ func schemaSkeleton(s *base.Schema, depth int) (any, bool) {
 	}
 	for _, branch := range [][]*base.SchemaProxy{s.OneOf, s.AnyOf} {
 		if len(branch) > 0 && branch[0] != nil {
-			return schemaSkeleton(branch[0].Schema(), depth)
+			return schemaSkeleton(branch[0].Schema(), walk)
 		}
 	}
 
@@ -366,7 +406,7 @@ func schemaSkeleton(s *base.Schema, depth int) (any, bool) {
 				out[name] = nil // required but undescribed: the key still belongs
 				continue
 			}
-			v, cut := schemaSkeleton(prop.Schema(), depth+1)
+			v, cut := schemaSkeleton(prop.Schema(), walk)
 			truncated = truncated || cut
 			out[name] = v
 		}
