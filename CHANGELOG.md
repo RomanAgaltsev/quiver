@@ -99,8 +99,14 @@ carries no marker.
 - A two-request hermetic example, `examples/local/load-folder/`, exercising the
   breakdown, weights and warmup. CI runs it and asserts all three, the way
   amendment A7 established.
-- `go` directive to 1.26.0 and `golang.org/x/time` to v0.16.0, both required by
-  metronome v0.9.0 rather than chosen here.
+- `golang.org/x/time` to v0.16.0, required by metronome v0.9.0 rather than chosen here.
+- **The `go` directive moves to `1.27`**, and the minor-only form is deliberate. Every
+  workflow resolves its toolchain from `go-version-file: go.mod`, and `actions/setup-go`
+  treats a bare minor as "the latest patch of that line" but an explicit patch as an exact
+  pin. `go get` had canonicalised the directive to `1.26.0`, which pinned CI to the initial
+  go1.26 release and lit up **23 standard-library advisories** in `govulncheck`, every one
+  of them already fixed in go1.26.1. Writing `1.27.1` here would have bought the same trap
+  back the day a fix lands in 1.27.2. **quiver now needs Go 1.27 or newer to build.**
 
 ## [1.1.1](https://github.com/RomanAgaltsev/quiver/compare/v1.1.0...v1.1.1) (2026-09-03)
 

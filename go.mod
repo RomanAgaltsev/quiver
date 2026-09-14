@@ -1,6 +1,6 @@
 module github.com/RomanAgaltsev/quiver
 
-go 1.26.0
+go 1.27
 
 require (
 	github.com/RomanAgaltsev/metronome v0.9.0
