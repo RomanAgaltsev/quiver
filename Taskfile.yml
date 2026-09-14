@@ -42,6 +42,21 @@ tasks:
   fmt:
     cmds: ['golangci-lint fmt']
 
+  typos:
+    desc: >-
+      Spell-check the repository, the same gate CI runs. Install once:
+      `winget install Crate-CI.Typos` (Windows), `brew install typos-cli` (macOS),
+      or `cargo install typos-cli`.
+    cmds: ['typos']
+    preconditions:
+      - sh: typos --version
+        msg: >-
+          typos is not installed, so this check cannot run. It is NOT optional:
+          CI runs it and a single misspelled word in a comment fails the build
+          after you have already pushed. Install it with
+          `winget install Crate-CI.Typos`, `brew install typos-cli`, or
+          `cargo install typos-cli`.
+
   proto:
     desc: Regenerate the gRPC test fixtures (needs protoc + protoc-gen-go + protoc-gen-go-grpc).
     cmds:
@@ -56,10 +71,14 @@ tasks:
   ci:
     desc: >-
       The local gate, as close to CI as a workstation gets. CI additionally runs
-      -race on three OSes, CodeQL, actionlint, typos and dependency-review.
+      -race on three OSes, CodeQL, actionlint and dependency-review.
     cmds:
       - task: fmt
       - task: lint
+      # typos runs before the slow jobs: it takes under a second, and it is the
+      # gate that used to fail only AFTER a push, twice in a row, both times on
+      # one word in a comment.
+      - task: typos
       - task: test
       - task: vuln
 
