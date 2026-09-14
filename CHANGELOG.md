@@ -11,6 +11,107 @@ All notable changes to this project are documented here. The format follows
 
 * qv gen proto — generate a gRPC collection from proto files or reflection ([#23](https://github.com/RomanAgaltsev/quiver/issues/23)) ([9853a3b](https://github.com/RomanAgaltsev/quiver/commit/9853a3b8315b034c93dbeba1e97496c91a4e646a))
 
+#### `qv gen proto` — a service definition becomes a runnable gRPC collection
+
+```sh
+qv gen proto ./api/*.proto --target localhost:50051 -o ./my-api   # from files
+qv gen proto --reflect localhost:50051 --plaintext -o ./my-api    # from a live server
+```
+
+One request file per **unary** RPC, grouped by service, plus a `collection.yaml` carrying the
+target as `{{grpc_target}}`. Descriptors come from `.proto` files or from a live server's
+reflection service — never both in one run. With files, `--target` says where to call, because
+a `.proto` describes *what* to call and never *where*.
+
+**No new dependency.** `internal/transport/grpcx` already compiled `.proto` files and already
+negotiated v1-vs-v1alpha reflection for `qv grpc`; what was missing was only *enumeration*,
+since both existing paths resolve a single method by name. Both sources now produce
+`grpcx.MethodInfo` through one shared walk, so the generator never branches on where a service
+definition came from — and a test asserts the two enumerators classify the same service
+identically, because a method called streaming by one and unary by the other would surface only
+as a request file that fails at send time.
+
+#### Generated messages are protojson, which is not what your .proto looks like
+
+```yaml
+name: PetStore/GetPet
+protocol: grpc
+grpc:
+  target: "{{grpc_target}}"
+  method: pkg.PetStore/GetPet
+  message: |-
+    {
+      "asOf": "",
+      "includePhotos": false,
+      "petId": ""
+    }
+assertions:
+  - name: ok
+    from: status
+    op: eq
+    value: OK
+```
+
+A proto `pet_id` is sent as `petId`. The name is taken from the descriptor rather than
+transformed by hand, so protojson's own rules apply — including its handling of names that
+already contain capitals. Two consequences of the same kind, both worth knowing before you
+compare a generated file against its `.proto`:
+
+- A **64-bit integer is a JSON string** (`"0"`, not `0`), because a JSON number cannot hold one
+  exactly.
+- A **well-known type is its protojson form**: a `Timestamp` is an RFC 3339 string, generated as
+  `""` rather than `{"seconds":0,"nanos":0}`.
+
+Every one of these produces a file that YAML parses, JSON parses and a golden test happily pins
+— and that the server rejects. That is why the release is gated on a test that generates from
+the example server's own reflection service and then executes the result with the real
+`qv run`, rather than on the suite alone.
+
+proto3 has no `required`, so unlike OpenAPI generation there is nothing to filter on and every
+field is emitted. `--depth` bounds nesting, and a **self-referential message terminates
+regardless of `--depth`**: the cycle guard is a correctness control kept separate from the size
+cap, so raising the cap cannot reintroduce a hang.
+
+#### Streaming RPCs are skipped, and said so
+
+quiver is unary-only until Phase 7. A client-, server- or bidi-streaming RPC is not generated,
+and each is named in the report:
+
+```
+generated 2 file(s)
+
+notes:
+  - pkg.PetStore/ListPets is a streaming RPC and was skipped; quiver is unary-only until Phase 7
+```
+
+A streaming-heavy service produces a smaller collection than its `.proto` suggests. Saying which
+RPCs went missing is the difference between a limitation and an apparent bug.
+
+#### Re-generation, and where drift detection is weaker
+
+2a's lockfile, writer, report, `--force` and `--check` are reused unchanged: a collection may
+hold files from both generators and behaves the same either way. Your edits are skipped and
+reported, never overwritten without `--force`.
+
+One honest gap. A `--reflect` source records `source: reflect://host:port` and **no
+`source_hash`**, because a live server has no stable bytes to fingerprint. Inventing one —
+hashing the enumerated method list, say — would make every deployment that merely reordered its
+services look like drift. So `--check` against a reflective target compares the generated files,
+not the source. Against `.proto` files it compares both.
+
+`grpc.proto_files` is resolved relative to the **request file**, so generated paths climb out of
+the collection. When the output directory and the `.proto` sit on different Windows volumes there
+is no relative path between them at all, and an absolute one is written instead; `qv run` honours
+both.
+
+#### For the next generator
+
+Phase 2c (GraphQL) is the last of Phase 2 and inherits this lockfile design and these output
+conventions. The lesson 2b adds to 2a's: **for any wire format with its own JSON mapping,
+enumerate that mapping's type rules explicitly rather than assuming "the zero value for the
+kind" is well defined.** Both of this release's near-misses — field-name casing and 64-bit
+integers — were that assumption, and neither is visible to any check that stops at "it parses".
+
 ## [1.3.0](https://github.com/RomanAgaltsev/quiver/compare/v1.2.0...v1.3.0) (2026-09-14)
 
 
