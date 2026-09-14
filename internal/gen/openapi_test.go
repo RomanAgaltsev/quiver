@@ -44,3 +44,35 @@ paths:
 	require.Contains(t, err.Error(), "DoesNotExist",
 		"a broken $ref must name what could not be resolved")
 }
+
+func TestFilePathUsesTagAndOperationID(t *testing.T) {
+	got := filePath("GET", "/pets/{petId}", "getPetById", []string{"pets"})
+	require.Equal(t, "pets/getPetById.yaml", got)
+}
+
+func TestFilePathFallsBackToMethodAndPath(t *testing.T) {
+	got := filePath("GET", "/pets/{petId}", "", []string{"pets"})
+	require.Equal(t, "pets/get-pets-petId.yaml", got)
+}
+
+func TestFilePathUntaggedGoesToRoot(t *testing.T) {
+	got := filePath("POST", "/login", "login", nil)
+	require.Equal(t, "login.yaml", got)
+}
+
+func TestFilePathSlugifiesAwkwardTags(t *testing.T) {
+	got := filePath("GET", "/x", "getX", []string{"Pet Store / Admin"})
+	require.Equal(t, "pet-store-admin/getX.yaml", got,
+		"a tag becomes one directory segment; a slash in it must not create a subdirectory")
+}
+
+func TestOperationsEnumeratesEveryMethod(t *testing.T) {
+	doc := mustLoad(t, "testdata/multi-method.yaml")
+	ops := Operations(doc)
+	require.Len(t, ops, 3)
+	methods := []string{}
+	for _, o := range ops {
+		methods = append(methods, o.method)
+	}
+	require.ElementsMatch(t, []string{"GET", "POST", "DELETE"}, methods)
+}
