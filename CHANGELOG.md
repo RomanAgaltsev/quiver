@@ -4,12 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-<!-- Release note for whoever cuts v1.2.0: release-please inserts the generated
-     "## [1.2.0]" heading and its Features bullets immediately BEFORE the first
-     existing version heading — i.e. at the BOTTOM of this prose, directly above
-     "## [1.1.1]". Move those generated lines to the top of this section before
-     merging the release PR, and delete this comment. Read the generated
-     artifact; do not predict where it lands. -->
+## [1.2.0](https://github.com/RomanAgaltsev/quiver/compare/v1.1.1...v1.2.0) (2026-09-14)
+
+
+### Features
+
+* adopt metronome v0.9.0 — live percentiles, per-endpoint breakdown, warmup ([#17](https://github.com/RomanAgaltsev/quiver/issues/17)) ([a2d5b90](https://github.com/RomanAgaltsev/quiver/commit/a2d5b902f900ad2bc52c4fe3d7394ee650ee417a))
 
 #### Adopting metronome v0.9.0 — live percentiles, a per-request breakdown, and `--warmup`
 
@@ -107,13 +107,6 @@ carries no marker.
   go1.26 release and lit up **23 standard-library advisories** in `govulncheck`, every one
   of them already fixed in go1.26.1. Writing `1.27.1` here would have bought the same trap
   back the day a fix lands in 1.27.2. **quiver now needs Go 1.27 or newer to build.**
-
-## [1.2.0](https://github.com/RomanAgaltsev/quiver/compare/v1.1.1...v1.2.0) (2026-09-14)
-
-
-### Features
-
-* adopt metronome v0.9.0 — live percentiles, per-endpoint breakdown, warmup ([#17](https://github.com/RomanAgaltsev/quiver/issues/17)) ([a2d5b90](https://github.com/RomanAgaltsev/quiver/commit/a2d5b902f900ad2bc52c4fe3d7394ee650ee417a))
 
 ## [1.1.1](https://github.com/RomanAgaltsev/quiver/compare/v1.1.0...v1.1.1) (2026-09-03)
 
