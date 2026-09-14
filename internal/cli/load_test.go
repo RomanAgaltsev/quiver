@@ -12,6 +12,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// None of the load tests below asserts throughput. They assert that the command
+// runs, that it renders a report, and that a given condition maps to a given
+// exit code. The 500 rps they used to drive was incidental, and it made them
+// assert something about the machine instead: over a 40ms run the lag budget is
+// 25ms, and a shared runner under -race misses that routinely. Measured here at
+// 115.8ms of lag with saturated=0 — exit 3, "the measurement is not
+// trustworthy", from a test that never cared.
+//
+// So they drive a rate a CI runner can hold trivially, which also keeps ten
+// workers far from saturation, AND pass --allow-lag for the budget itself.
+// Exit 3 outranks exit 1, so a lagging run does not merely fail the tests that
+// expect success -- it also fails the one expecting a threshold failure.
+//
+// --allow-lag waives the schedule_lag verdict and nothing else (amendment A4),
+// so saturation and a clamped histogram still fail these tests. The same
+// reasoning, in the same words, is already why CI passes --allow-lag when it
+// runs the shipped example. The dedicated job that asks for 100,000 rps is
+// what proves exit 3 is still reachable.
+//
+// Each also passes the rendered report as the failure message: the report is
+// written to a buffer, so without this a CI failure says only "the measurement
+// is not trustworthy" and the verdict that explains it is discarded.
+
 func TestLoadCommandRuns(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"ok":true}`))
@@ -26,8 +49,8 @@ func TestLoadCommandRuns(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"load", reqPath, "--rate", "500", "--requests", "50"})
-	require.NoError(t, cmd.Execute())
+	cmd.SetArgs([]string{"load", reqPath, "--rate", "100", "--requests", "20", "--allow-lag"})
+	require.NoError(t, cmd.Execute(), "report:\n%s", out.String())
 	require.Contains(t, out.String(), "requests")
 	require.Contains(t, out.String(), "corrected")
 }
@@ -44,8 +67,9 @@ func TestLoadCommandJSONOutput(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"load", reqPath, "--rate", "500", "--requests", "20", "--output", "json"})
-	require.NoError(t, cmd.Execute())
+	cmd.SetArgs([]string{"load", reqPath, "--rate", "100", "--requests", "20",
+		"--output", "json", "--allow-lag"})
+	require.NoError(t, cmd.Execute(), "report:\n%s", out.String())
 
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &got))
@@ -61,18 +85,19 @@ func TestLoadThresholdFailureExitsOne(t *testing.T) {
 	dir := t.TempDir()
 	reqPath := writeRequest(t, dir, "p.yaml",
 		"name: p\nprotocol: http\nhttp:\n  method: GET\n  url: \""+srv.URL+"\"\n"+
-			"load:\n  rate: 500\n  requests: 20\n  thresholds:\n    error_rate: 0.0\n")
+			"load:\n  rate: 100\n  requests: 20\n  thresholds:\n    error_rate: 0.0\n")
 
+	var out bytes.Buffer
 	cmd := newRootCmd()
-	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"load", reqPath})
+	cmd.SetArgs([]string{"load", reqPath, "--allow-lag"})
 	err := cmd.Execute()
 	require.Error(t, err)
 
 	var ee *exitError
 	require.ErrorAs(t, err, &ee)
-	require.Equal(t, 1, ee.Code())
+	require.Equal(t, 1, ee.Code(), "report:\n%s", out.String())
 }
 
 // Captures on a load target are a config error, before anything is sent.
@@ -137,14 +162,16 @@ func TestLoadWithSetupFolder(t *testing.T) {
 	writeRequest(t, dir, "load/me.yaml",
 		"name: me\nprotocol: http\nhttp:\n  method: GET\n  url: \""+srv.URL+"/me\"\n"+
 			"  headers:\n    Authorization: \"Bearer {{tok}}\"\n"+
-			"load:\n  rate: 500\n  requests: 20\n  thresholds:\n    error_rate: 0.0\n")
+			"load:\n  rate: 100\n  requests: 20\n  thresholds:\n    error_rate: 0.0\n")
 
+	var out bytes.Buffer
 	cmd := newRootCmd()
-	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"load", filepath.Join(dir, "load", "me.yaml"),
-		"--setup", filepath.Join(dir, "auth")})
-	require.NoError(t, cmd.Execute(), "every load request should have carried the token")
+		"--setup", filepath.Join(dir, "auth"), "--allow-lag"})
+	require.NoError(t, cmd.Execute(),
+		"every load request should have carried the token; report:\n%s", out.String())
 }
 
 // A --setup chain that ran and was refused is exit 1, not exit 2. Exit 2 means
@@ -202,10 +229,10 @@ func TestLoadThresholdFailureExplainsItselfOnStderr(t *testing.T) {
 	dir := t.TempDir()
 	reqPath := writeRequest(t, dir, "p.yaml",
 		"name: p\nprotocol: http\nhttp:\n  method: GET\n  url: \""+srv.URL+"\"\n"+
-			"load:\n  rate: 500\n  requests: 20\n  thresholds:\n    error_rate: 0.0\n")
+			"load:\n  rate: 100\n  requests: 20\n  thresholds:\n    error_rate: 0.0\n")
 
-	_, errOut, code := run(t, "load", reqPath)
-	require.Equal(t, 1, code)
+	out, errOut, code := run(t, "load", reqPath, "--allow-lag")
+	require.Equal(t, 1, code, "report:\n%s", out)
 	require.Contains(t, errOut, "threshold failed")
 	require.Contains(t, errOut, "error_rate")
 	require.NotContains(t, errOut, "PANIC")
