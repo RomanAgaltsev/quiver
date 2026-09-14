@@ -47,6 +47,7 @@ my-api/
     01-login.yaml        # one request per file; `order:` sequences folder runs
     02-me.yaml
   .qv/history/           # local history JSONL (gitignored)
+  .qv/gen.lock           # only if generated: what `qv gen` wrote (committed)
 ```
 
 `collection.yaml` is discovered by searching upward from the target, so
@@ -156,6 +157,149 @@ A template that cannot be resolved is a config error (exit 2), never text on the
 wire. That includes an unset `{{env:NAME}}` and a variable whose *value* is
 itself a template — substitution happens once and does not recurse.
 
+## Generating a collection from an OpenAPI spec
+
+```sh
+qv gen openapi ./openapi.yaml -o ./my-api
+```
+
+One request file per operation, plus a `collection.yaml` carrying the spec's
+first server as `defaults.base` and its security schemes as auth profiles.
+OpenAPI **3.x only** — a Swagger 2.0 document is refused by name rather than
+half-mapped.
+
+```
+my-api/
+  collection.yaml          # defaults.base + auth profiles from securitySchemes
+  .qv/gen.lock             # what qv gen wrote — COMMIT THIS
+  pets/
+    listPets.yaml          # <tag>/<operationId>.yaml
+    getPetById.yaml
+```
+
+Files are grouped by the operation's first tag — the grouping the spec's own
+author already chose. An operation with no `operationId` becomes
+`<method>-<path>.yaml`; an untagged one lands in the output root.
+
+| Flag | Meaning |
+|---|---|
+| `-o`, `--output` | output directory (default `.`) |
+| `--force` | overwrite files you have edited since they were generated |
+| `--check` | print what would change, write nothing, exit 1 if anything would |
+
+| Code | Meaning |
+|---|---|
+| 0 | generated — **including when files were skipped** |
+| 1 | `--check` only: the collection has drifted from the spec |
+| 2 | the spec is unreadable, is Swagger 2.0, or the output cannot be written |
+
+Exit 1 never means "generation failed": that code means the API under test
+misbehaved, and blurring it would cost CI the distinction.
+
+### What an operation becomes
+
+```yaml
+name: getPetById
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/pets/{{petId}}"     # path params become quiver templates
+  headers:
+    Accept: application/json
+  query:
+    limit: "10"                       # only required params, or ones with a value
+auth: bearerAuth                      # from the operation's `security`
+assertions:
+  - name: ok
+    from: status
+    op: eq
+    value: "200"                      # the lowest declared 2xx
+```
+
+**Path parameters become `{{var}}` templates**, which is what makes a generated
+file runnable rather than a draft you have to edit first. Supply them with
+`-V petId=42` or an environment file. Only *required* query and header
+parameters are emitted, or optional ones the spec gives an `example` or
+`default` for — emitting every optional parameter would bury the two that
+matter. No `timeout:` is generated: a per-operation timeout from a spec would be
+a guess.
+
+Every request asserts something, so a generated collection is a CI gate on the
+first run. An operation declaring no 2xx response asserts that the status is
+under 400 instead, and the run reports that it did.
+
+### Credentials are never written to a file
+
+`securitySchemes` become auth profiles whose every credential is an
+`{{env:...}}` reference:
+
+```yaml
+auth:
+  bearerAuth:
+    type: bearer
+    token: "{{env:BEARERAUTH_TOKEN}}"     # <SCHEME>_TOKEN
+  basicAuth:
+    type: basic
+    username: "{{env:BASICAUTH_USERNAME}}" # _USERNAME / _PASSWORD
+    password: "{{env:BASICAUTH_PASSWORD}}"
+  apiKeyAuth:
+    type: apikey
+    header: X-API-Key
+    key: "{{env:APIKEYAUTH_KEY}}"          # _KEY
+```
+
+No literal credential is ever written to disk, even when the spec's examples
+contain one. `oauth2` and `openIdConnect` cannot be performed yet (Phase 7);
+they are emitted as a commented stub and named in the report rather than
+silently dropped, so a collection that cannot authenticate says why.
+
+### Re-generating: your edits are never overwritten
+
+`.qv/gen.lock` records what `qv gen` wrote and what each file looked like when
+it wrote it. On a re-run:
+
+| the lock says | the file on disk | what happens |
+|---|---|---|
+| absent | absent | written — a new operation |
+| present | unchanged since generation | rewritten from the spec |
+| present | **you edited it** | **skipped**, and reported |
+| present | you deleted it | written back, and reported |
+| absent | exists | skipped — qv did not write it, so it is not qv's to touch |
+
+**A file you have edited is never overwritten without `--force`**, and every
+skip is printed. An operation that leaves the spec is reported as *orphaned* and
+**left on disk** — deleting a file because an endpoint disappeared is your
+decision, not the tool's.
+
+```
+generated 2 file(s), skipped 1 (hand-edited), 1 orphaned
+  skipped: (edited since generation; --force overwrites)
+    pets/listPets.yaml
+  orphaned: (no longer in the spec; left on disk)
+    pets/deletePet.yaml
+```
+
+There is no three-way merge, on purpose: merging YAML you have restructured
+cannot be done correctly without knowing what you meant, and a merge that is
+*usually* right corrupts quietly in the files that are your source of truth.
+Skipping is always correct and always visible.
+
+**Commit `.qv/gen.lock`.** This is the opposite of `.qv/history/`, which is
+local and gitignored — the shared `.qv/` prefix makes the wrong assumption the
+natural one. Without the lockfile, a re-run treats every existing file as
+unmanaged and touches nothing. If your `.gitignore` has a blanket `.qv/`, undo
+it for this one file:
+
+```gitignore
+.qv/
+!.qv/gen.lock
+```
+
+`--check` is the CI form: it runs the whole generation in memory, prints what
+would change, writes nothing, and exits 1 if the committed collection has
+drifted from its spec. Files you have deliberately edited are reported but are
+not drift — keeping your edits is the promise, not a failure.
+
 ## Ad-hoc requests
 
 No file needed:
@@ -215,6 +359,10 @@ explicit `metadata:` entry of the same key wins over the profile.
 | 1    | transport failure, failed assertion, or non-OK response with `--check-status`      |
 | 2    | configuration error (unknown env, bad YAML, unresolved variable, unknown auth, …)  |
 | 3    | `qv load` only: the run completed but the measurement is not trustworthy           |
+
+`qv gen` reads the same table with one narrowing: it never exits 1 for a
+generation failure — only for `--check` drift. See
+[Generating a collection from an OpenAPI spec](#generating-a-collection-from-an-openapi-spec).
 
 Exit 2 covers everything that is the *definition's* fault and means nothing was
 sent — a malformed request file, an unresolved template, an auth profile that

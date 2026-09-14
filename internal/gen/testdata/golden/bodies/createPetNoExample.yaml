@@ -1,0 +1,21 @@
+name: createPetNoExample
+protocol: http
+http:
+  method: POST
+  url: "{{base}}/pets-no-example"
+  headers:
+    Content-Type: application/json
+  body: |-
+    {
+      "age": 0,
+      "name": "",
+      "owner": {
+        "id": ""
+      },
+      "tags": []
+    }
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "201"

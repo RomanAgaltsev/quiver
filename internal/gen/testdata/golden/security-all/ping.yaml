@@ -1,0 +1,11 @@
+name: ping
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/ping"
+auth: bearerAuth
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

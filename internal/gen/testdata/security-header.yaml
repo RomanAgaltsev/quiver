@@ -1,0 +1,38 @@
+openapi: 3.1.0
+info:
+  title: SecurityHeader
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+paths:
+  /me:
+    get:
+      operationId: getMe
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          schema:
+            type: string
+        - name: X-Trace
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /public:
+    get:
+      operationId: getPublic
+      security: []
+      responses:
+        "200":
+          description: ok

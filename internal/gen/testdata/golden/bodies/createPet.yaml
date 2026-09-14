@@ -1,0 +1,17 @@
+name: createPet
+protocol: http
+http:
+  method: POST
+  url: "{{base}}/pets"
+  headers:
+    Content-Type: application/json
+  body: |-
+    {
+      "name": "Fido",
+      "tag": "dog"
+    }
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "201"

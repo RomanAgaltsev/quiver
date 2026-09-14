@@ -1,0 +1,10 @@
+name: ping
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/ping"
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

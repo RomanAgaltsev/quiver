@@ -1,0 +1,10 @@
+name: getPetById
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/pets/{{petId}}"
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

@@ -1,0 +1,10 @@
+name: Liveness or readiness probe
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/health/{{probe}}"
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

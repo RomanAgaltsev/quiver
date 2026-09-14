@@ -1,0 +1,13 @@
+name: getMe
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/me"
+  headers:
+    X-Trace: "{{X-Trace}}"
+auth: bearerAuth
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

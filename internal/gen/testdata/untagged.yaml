@@ -1,0 +1,32 @@
+openapi: 3.1.0
+info:
+  title: Untagged
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /login:
+    post:
+      operationId: login
+      summary: Sign in
+      responses:
+        "200":
+          description: ok
+  /health/{probe}:
+    get:
+      summary: Liveness or readiness probe
+      parameters:
+        - name: probe
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /reports:
+    get:
+      tags: ["Pet Store / Admin"]
+      responses:
+        "200":
+          description: ok

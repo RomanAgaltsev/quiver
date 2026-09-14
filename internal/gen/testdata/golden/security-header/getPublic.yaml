@@ -1,0 +1,10 @@
+name: getPublic
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/public"
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

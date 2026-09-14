@@ -1,0 +1,10 @@
+name: GET /reports
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/reports"
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "200"

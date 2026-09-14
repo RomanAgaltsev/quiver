@@ -38,19 +38,32 @@ Why first: it is the only capability on this roadmap no competitor has, its engi
 already built, and the Phase 0 seams (`Executor`, the normalized `Response`, gRPC
 connection pooling, `Closer`) were built specifically to make it additive.
 
-## Phase 2 — Spec-driven generation
+## Phase 2 — Spec-driven generation — PARTIALLY DELIVERED
 
 Turn an API description into a ready-to-run collection.
 
-- **OpenAPI → collection** via `pb33f/libopenapi`: one request file per operation, with
-  params, example bodies, and security → auth-profile stubs.
+- **OpenAPI → collection** via `pb33f/libopenapi` — **SHIPPED in v1.3.0**:
+  `qv gen openapi spec.yaml -o ./collection/`. One request file per operation, path
+  params as `{{var}}` templates, required/exampled query and header params, JSON body
+  from the declared example or a required-only schema skeleton, a status assertion from
+  the lowest declared 2xx, and `servers` + `securitySchemes` → collection `defaults` and
+  auth profiles whose every credential is an `{{env:...}}` reference.
 - **proto → collection** from a `.proto` file or a reflection endpoint, with JSON
-  message skeletons derived from the descriptors.
+  message skeletons derived from the descriptors. *(2b, not started.)*
 - **GraphQL introspection → collection** from a live endpoint or an SDL file.
-- `qv gen openapi spec.yaml -o ./collection/`, `qv gen proto …`, `qv gen graphql …`.
+  *(2c, not started.)*
 
-Generated files carry a provenance field so regeneration can diff and merge rather than
-clobber hand edits.
+Regeneration is governed by a committed **`.qv/gen.lock`** rather than a per-file
+provenance field: it records what `qv gen` wrote and what each file looked like, so a
+file you have since edited is skipped and reported instead of clobbered, and an
+operation that leaves the spec is reported as orphaned and left on disk. There is
+deliberately no three-way merge — the reasoning is in the design spec, and the contract
+is stated in the README as a promise. 2b and 2c inherit that lockfile design and the
+same output conventions.
+
+Not covered by 2a, and each named rather than assumed: Swagger 2.0 (refused by name),
+response-schema assertions, `--tag`/`--path` filters, and any request body that is not
+`application/json`.
 
 ## Phase 3 — Spec linting
 

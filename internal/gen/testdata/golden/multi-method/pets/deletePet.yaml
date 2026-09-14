@@ -1,0 +1,10 @@
+name: deletePet
+protocol: http
+http:
+  method: DELETE
+  url: "{{base}}/pets/{{id}}"
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: "204"
