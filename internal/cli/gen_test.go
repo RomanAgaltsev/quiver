@@ -280,7 +280,7 @@ func TestGenProtoReflectRecordsAHashlessSource(t *testing.T) {
 
 // The test that matters most: a generated gRPC collection has to actually run.
 //
-// A wrong JSONName, a mis-mapped well-known type or a bad relative proto_files
+// A wrong JSONName, a badly mapped well-known type or a bad relative proto_files
 // path all produce output that parses, validates and pins happily into a
 // golden — and that the server rejects.
 func TestGeneratedGRPCCollectionRunsAgainstTheLocalServer(t *testing.T) {
