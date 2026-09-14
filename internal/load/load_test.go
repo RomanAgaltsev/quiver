@@ -353,14 +353,21 @@ func TestWarmupExcludesAPrefixAndStaysAuditable(t *testing.T) {
 
 	target := &request.Request{Name: "ping", Protocol: request.ProtocolHTTP, Path: "ping.yaml",
 		HTTP: &request.HTTPSpec{Method: "GET", URL: srv.URL}}
-	// Closed loop deliberately: an open-loop unit that finds no free worker is
-	// delivered as a saturated Result without ever reaching the server, so
-	// Count + Skipped would legitimately exceed the server's hit count on a
-	// loaded machine and the reconciliation below would be checking the wrong
-	// invariant. Closed loop cannot saturate, so the two are exactly equal.
+	// Reconciling the server's hit count against Count + Skipped needs a run
+	// where every Result reached the server, and two things otherwise break
+	// that. An open-loop unit that finds no free worker is delivered as a
+	// saturated Result without being sent, and a DURATION-bounded run cancels
+	// whatever is in flight at the deadline, which delivers a Result the server
+	// may never have counted. So: closed loop, which cannot saturate, and
+	// bounded by requests rather than by time, so nothing is cancelled.
+	//
+	// 60 requests at 200/s is about 300ms of wall clock, so a 100ms warmup
+	// excludes roughly the first 20 however slow the machine is — the rate
+	// limiter sets the span, not the host.
+	const total = 60
 	p, err := ResolveProfile(
-		&request.LoadSpec{Rate: 200, Duration: request.NewDuration(400 * time.Millisecond)},
-		Overrides{Warmup: 150 * time.Millisecond, Pacing: "closed"})
+		&request.LoadSpec{Rate: 200, Requests: total},
+		Overrides{Warmup: 100 * time.Millisecond, Pacing: "closed"})
 	require.NoError(t, err)
 
 	run, err := Execute(context.Background(), Options{
@@ -372,7 +379,13 @@ func TestWarmupExcludesAPrefixAndStaysAuditable(t *testing.T) {
 	require.Positive(t, run.Skipped, "the warmup excluded nothing")
 	require.Positive(t, run.Snapshot.Count, "the warmup excluded the whole run")
 	require.Zero(t, run.Snapshot.Saturated, "closed loop must not saturate")
-	require.Equal(t, hits.Load(), run.Snapshot.Count+run.Skipped,
-		"Count + Skipped must be the whole population the target actually served")
-	require.Equal(t, 150*time.Millisecond, run.Warmup)
+
+	// The exclusion is auditable: Count + Skipped is the whole population, and
+	// it equals what the target actually served — so the warmup took traffic
+	// out of the REPORT without taking it off the wire.
+	require.Equal(t, int64(total), run.Snapshot.Count+run.Skipped,
+		"Count + Skipped must be the whole population")
+	require.Equal(t, int64(total), hits.Load(),
+		"warmup traffic must still be sent, not just excluded from the report")
+	require.Equal(t, 100*time.Millisecond, run.Warmup)
 }
