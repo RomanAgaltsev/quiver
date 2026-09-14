@@ -8,7 +8,13 @@ gluing three or four separate tools together.**
 
 ---
 
-## Phase 1 — Load testing (the signature differentiator)
+## Phase 1 — Load testing (the signature differentiator) — SHIPPED
+
+Shipped in v1.1.0/v1.1.1, and completed in v1.2.0 by adopting metronome v0.9.0:
+live percentiles in `--progress`, a per-request breakdown of a folder target, and
+`--warmup`. Those three were deferred at v1.1.0 for a reason that no longer holds --
+every figure metronome exposed mid-run was cumulative, so a live percentile would
+have been a lifetime figure presented as a current one.
 
 Promote any saved request or folder into a load test, with no rewrite:
 

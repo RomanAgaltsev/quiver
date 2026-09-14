@@ -111,6 +111,38 @@ jobs:
         # the example; the verdict still prints, and every other trust check
         # stays fatal.
         run: ./qv load examples/local/load/get-users.yaml --setup examples/local/requests/ --env dev --allow-lag
+      - name: run the load folder example
+        # A folder target is what the per-request breakdown and warmup exist
+        # for, and neither is exercised by the single-file example above. The
+        # Go suite covers the invariants against an httptest server; what this
+        # adds is that the SHIPPED example files still produce both through the
+        # real binary — amendment A7's rule, that an example nothing runs is an
+        # example that has already broken.
+        #
+        # Asserted against the pretty output rather than the JSON because that
+        # is what a user reads, and because it needs no JSON tool on the runner.
+        run: |
+          set -euo pipefail
+          ./qv load examples/local/load-folder/ --setup examples/local/requests/ \
+            --env dev --allow-lag | tee folder.txt
+
+          grep -q "warmup excluded" folder.txt \
+            || { echo "the warmup line is missing"; exit 1; }
+          grep -q "^per request" folder.txt \
+            || { echo "the per-request breakdown is missing"; exit 1; }
+
+          # Exactly two indented rows under the breakdown header, one per
+          # request file in the folder.
+          rows=$(sed -n '/^per request/,/^$/p' folder.txt | grep -c '^  [a-z]' || true)
+          test "$rows" = "2" || { echo "expected 2 breakdown rows, got $rows"; exit 1; }
+
+          # A healthy localhost run clamps a handful of sub-microsecond
+          # latencies at the histogram floor. Those must NOT be marked: only a
+          # clamp at the ceiling truncates a tail, and marking both would put a
+          # warning on every green run.
+          ! grep -q "clamped" folder.txt \
+            || { echo "a healthy run was marked as clamped"; exit 1; }
+
       - name: the trust exit code is reachable
         # A gate that cannot demonstrate its own failure mode is not a gate.
         # metronome's open-loop dispatcher tops out in the low thousands of rps,

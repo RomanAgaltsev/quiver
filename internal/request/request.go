@@ -440,6 +440,21 @@ func (l *LoadSpec) Validate(name string) error {
 	}
 	where := fmt.Sprintf("request %q: load", name)
 
+	// A folder member may declare only `weight`. The run shape comes from the
+	// FIRST file in the folder — ValidateTargets enforces exactly that, and
+	// rejects a later file declaring anything else — so requiring a rate and a
+	// bound here made the documented weight-only form impossible to write. Every
+	// other rule below is about a run shape this spec does not carry.
+	// Weight must actually be declared: an entirely empty load: block sets no
+	// weight either, and that is still the "set exactly one of rate, ramp, or
+	// phases" error below rather than a silently accepted profile.
+	if l.Weight != 0 && len(l.KeysBesidesWeight()) == 0 {
+		if l.Weight < 0 {
+			return fmt.Errorf("%s: weight must not be negative", where)
+		}
+		return nil
+	}
+
 	shapes := 0
 	if l.Rate != 0 {
 		shapes++

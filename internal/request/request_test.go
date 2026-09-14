@@ -381,3 +381,37 @@ func TestRequestWithoutLoadBlockIsValid(t *testing.T) {
 	require.Nil(t, r.Load)
 	require.NoError(t, r.Validate())
 }
+
+// A folder member declares only `weight`: the run shape comes from the first
+// file in the folder, and ValidateTargets rejects a later file that declares
+// anything else. Requiring a rate and a bound here made the documented
+// weight-only form impossible to write, so a two-request load folder could not
+// be expressed at all.
+func TestLoadSpecAcceptsAWeightOnlyFolderMember(t *testing.T) {
+	r := &Request{
+		Name: "me", Protocol: ProtocolHTTP,
+		HTTP: &HTTPSpec{Method: "GET", URL: "http://x/me"},
+		Load: &LoadSpec{Weight: 1},
+	}
+	require.NoError(t, r.Validate())
+
+	r.Load = &LoadSpec{Weight: -1}
+	require.Error(t, r.Validate(), "a negative weight is still a config error")
+
+	// Anything besides weight still needs a shape and a bound.
+	r.Load = &LoadSpec{Weight: 1, Concurrency: 4}
+	require.Error(t, r.Validate(), "a spec setting more than weight must still be coherent")
+}
+
+// An entirely empty load: block sets no weight either, so it must not slip
+// through the weight-only path — it is still a profile with no rate shape.
+func TestLoadSpecRejectsAnEmptyBlock(t *testing.T) {
+	r := &Request{
+		Name: "x", Protocol: ProtocolHTTP,
+		HTTP: &HTTPSpec{Method: "GET", URL: "http://x"},
+		Load: &LoadSpec{},
+	}
+	err := r.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exactly one")
+}

@@ -176,13 +176,33 @@ func writeBreakdown(b *strings.Builder, rows []requestStats) {
 	fmt.Fprintf(b, "\nper request     %8s %8s %8s %8s\n", "reqs", "err", "p50", "p99")
 	for _, row := range rows {
 		mark := ""
-		if row.Snap.Clamped > 0 || row.Snap.CorrectedClamped > 0 {
+		if clampedHigh(row.Snap) {
 			mark = "  ! clamped, percentiles understate"
 		}
 		fmt.Fprintf(b, "  %-12s %8d %8d %8s %8s%s\n",
 			truncate(row.Name, 12), row.Snap.Count, row.Snap.Errors,
 			ms(row.Snap.P50), ms(row.Snap.P99), mark)
 	}
+}
+
+// clampedHigh reports whether a series' percentiles actually understate
+// reality — the only clamp worth warning about.
+//
+// Clamped counts BOTH ends of the range. A latency under statsLow is recorded
+// at the floor, which rounds a sub-microsecond result up: it cannot hide a slow
+// request, and on a localhost run a handful of them is normal. Only a clamp at
+// the ceiling truncates the tail, and Max is tracked outside the histogram, so
+// Max above statsHigh is what distinguishes the two.
+//
+// This is the same discriminator trustVerdicts uses, and for the same reason:
+// marking every low-side clamp would put a warning on nearly every healthy run,
+// which is the defect amendment A2 fixed for the total and would have been
+// reintroduced here per series.
+func clampedHigh(s metronome.Snapshot) bool {
+	if s.Clamped > 0 && s.Max > statsHigh {
+		return true
+	}
+	return s.CorrectedClamped > 0 && s.Max+s.MaxScheduleLag > statsHigh
 }
 
 // truncate keeps the breakdown's columns aligned when a request name is longer

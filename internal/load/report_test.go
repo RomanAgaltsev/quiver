@@ -6,6 +6,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -344,4 +345,39 @@ func TestReportOmitsWarmupLineWhenUnset(t *testing.T) {
 		Format: "pretty", Redactor: secret.NewRedactor(nil)}))
 	require.NotContains(t, buf.String(), "warmup",
 		"a run without --warmup mentioned warmup")
+}
+
+// Clamped counts both ends of the histogram range. A low-side clamp rounds a
+// sub-microsecond latency up to the floor: it cannot hide a slow request, and a
+// handful of them is normal on a localhost run. Marking those would put a
+// warning on nearly every healthy run — the defect amendment A2 fixed for the
+// total, which the per-series marker reintroduced until this test.
+func TestBreakdownMarksOnlyHighSideClamping(t *testing.T) {
+	r := sampleRun()
+	r.ByRequest = []requestStats{
+		// 7 clamps, but Max is 2ms: every one of them is at the floor.
+		{Name: "fast", Snap: metronome.Snapshot{Count: 400, Clamped: 7, Max: 2 * time.Millisecond}},
+		// Clamped with Max beyond the ceiling: the tail really is truncated.
+		{Name: "slow", Snap: metronome.Snapshot{Count: 10, Clamped: 3, Max: statsHigh + time.Second}},
+	}
+	var buf bytes.Buffer
+	require.NoError(t, WriteReport(&buf, r, ReportOptions{
+		Format: "pretty", Redactor: secret.NewRedactor(nil)}))
+
+	lines := strings.Split(buf.String(), "\n")
+	var fast, slow string
+	for _, l := range lines {
+		switch {
+		case strings.Contains(l, "fast"):
+			fast = l
+		case strings.Contains(l, "slow"):
+			slow = l
+		}
+	}
+	require.NotEmpty(t, fast)
+	require.NotEmpty(t, slow)
+	require.NotContains(t, fast, "clamped",
+		"a low-side clamp was marked; it cannot make a percentile understate")
+	require.Contains(t, slow, "clamped",
+		"a high-side clamp went unmarked; the tail is truncated")
 }

@@ -353,9 +353,14 @@ func TestWarmupExcludesAPrefixAndStaysAuditable(t *testing.T) {
 
 	target := &request.Request{Name: "ping", Protocol: request.ProtocolHTTP, Path: "ping.yaml",
 		HTTP: &request.HTTPSpec{Method: "GET", URL: srv.URL}}
+	// Closed loop deliberately: an open-loop unit that finds no free worker is
+	// delivered as a saturated Result without ever reaching the server, so
+	// Count + Skipped would legitimately exceed the server's hit count on a
+	// loaded machine and the reconciliation below would be checking the wrong
+	// invariant. Closed loop cannot saturate, so the two are exactly equal.
 	p, err := ResolveProfile(
 		&request.LoadSpec{Rate: 200, Duration: request.NewDuration(400 * time.Millisecond)},
-		Overrides{Warmup: 150 * time.Millisecond})
+		Overrides{Warmup: 150 * time.Millisecond, Pacing: "closed"})
 	require.NoError(t, err)
 
 	run, err := Execute(context.Background(), Options{
@@ -365,6 +370,8 @@ func TestWarmupExcludesAPrefixAndStaysAuditable(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Positive(t, run.Skipped, "the warmup excluded nothing")
+	require.Positive(t, run.Snapshot.Count, "the warmup excluded the whole run")
+	require.Zero(t, run.Snapshot.Saturated, "closed loop must not saturate")
 	require.Equal(t, hits.Load(), run.Snapshot.Count+run.Skipped,
 		"Count + Skipped must be the whole population the target actually served")
 	require.Equal(t, 150*time.Millisecond, run.Warmup)
