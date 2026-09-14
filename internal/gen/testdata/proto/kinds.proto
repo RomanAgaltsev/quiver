@@ -1,0 +1,35 @@
+syntax = "proto3";
+package pkg;
+
+enum Status {
+  STATUS_UNKNOWN = 0;
+  STATUS_ACTIVE = 1;
+}
+
+message Inner { string v = 1; }
+
+message AllKinds {
+  string s = 1;
+  int32 n = 2;
+  bool b = 3;
+  repeated string rep = 4;
+  map<string, string> m = 5;
+  Status status = 6;
+  double d = 7;
+  int64 big = 8;
+  bytes raw = 9;
+  Inner inner = 10;
+}
+
+message WithOneof {
+  oneof selector {
+    string by_id = 1;
+    string by_name = 2;
+  }
+  string always = 3;
+}
+
+service Kinds {
+  rpc Do(AllKinds) returns (AllKinds);
+  rpc Choose(WithOneof) returns (AllKinds);
+}

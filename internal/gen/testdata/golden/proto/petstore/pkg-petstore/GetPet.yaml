@@ -1,0 +1,16 @@
+name: PetStore/GetPet
+protocol: grpc
+grpc:
+  target: "{{grpc_target}}"
+  method: pkg.PetStore/GetPet
+  message: |-
+    {
+      "asOf": "",
+      "includePhotos": false,
+      "petId": ""
+    }
+assertions:
+- name: ok
+  from: status
+  op: eq
+  value: OK

@@ -38,7 +38,7 @@ Why first: it is the only capability on this roadmap no competitor has, its engi
 already built, and the Phase 0 seams (`Executor`, the normalized `Response`, gRPC
 connection pooling, `Closer`) were built specifically to make it additive.
 
-## Phase 2 — Spec-driven generation — PARTIALLY DELIVERED
+## Phase 2 — Spec-driven generation — 2a and 2b DELIVERED, 2c to come
 
 Turn an API description into a ready-to-run collection.
 
@@ -48,8 +48,14 @@ Turn an API description into a ready-to-run collection.
   from the declared example or a required-only schema skeleton, a status assertion from
   the lowest declared 2xx, and `servers` + `securitySchemes` → collection `defaults` and
   auth profiles whose every credential is an `{{env:...}}` reference.
-- **proto → collection** from a `.proto` file or a reflection endpoint, with JSON
-  message skeletons derived from the descriptors. *(2b, not started.)*
+- **proto → collection** from `.proto` files or a reflection endpoint — **SHIPPED in
+  v1.4.0**: `qv gen proto api/*.proto --target host:port -o ./collection/`, or
+  `qv gen proto --reflect host:port`. One request file per **unary** RPC grouped by
+  service, protojson message skeletons derived from the descriptors, and a
+  `status eq OK` assertion. Streaming RPCs are skipped and named in the report.
+  **No new dependency** — both descriptor sources were already in `go.mod`, and both
+  funnel through one `grpcx.MethodInfo` seam so the generator never branches on
+  provenance.
 - **GraphQL introspection → collection** from a live endpoint or an SDL file.
   *(2c, not started.)*
 
@@ -58,12 +64,16 @@ provenance field: it records what `qv gen` wrote and what each file looked like,
 file you have since edited is skipped and reported instead of clobbered, and an
 operation that leaves the spec is reported as orphaned and left on disk. There is
 deliberately no three-way merge — the reasoning is in the design spec, and the contract
-is stated in the README as a promise. 2b and 2c inherit that lockfile design and the
-same output conventions.
+is stated in the README as a promise. 2b reuses that lockfile, writer and report
+unchanged — a collection may hold files from both generators and behaves the same
+either way — and 2c will too. The one difference: a `--reflect` source records no
+`source_hash`, because a live server has no stable bytes to fingerprint, so drift
+detection is weaker there and the README says so.
 
 Not covered by 2a, and each named rather than assumed: Swagger 2.0 (refused by name),
 response-schema assertions, `--tag`/`--path` filters, and any request body that is not
-`application/json`.
+`application/json`. Not covered by 2b: streaming RPCs (Phase 7), and response-message
+assertions beyond the status.
 
 ## Phase 3 — Spec linting
 

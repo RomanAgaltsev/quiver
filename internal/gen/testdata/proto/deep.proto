@@ -1,0 +1,9 @@
+syntax = "proto3";
+package pkg;
+
+message L4 { string v = 1; }
+message L3 { L4 l4 = 1; }
+message L2 { L3 l3 = 1; }
+message L1 { L2 l2 = 1; }
+
+service Deep { rpc Go(L1) returns (L4); }

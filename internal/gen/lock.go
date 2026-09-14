@@ -28,9 +28,12 @@ const lockVersion = 1
 // Lock records what the generator wrote, so a re-run can tell a file it owns
 // from one a person has since made their own.
 type Lock struct {
-	Version     int                  `yaml:"version"`
-	Source      string               `yaml:"source"`
-	SourceHash  string               `yaml:"source_hash"`
+	Version int    `yaml:"version"`
+	Source  string `yaml:"source"`
+	// SourceHash is omitted when empty: a --reflect source is a live server with
+	// no stable bytes to hash, and inventing one would make every server restart
+	// look like spec drift.
+	SourceHash  string               `yaml:"source_hash,omitempty"`
 	Generator   string               `yaml:"generator"`
 	GeneratedAt time.Time            `yaml:"generated_at"`
 	Files       map[string]LockEntry `yaml:"files"`
@@ -157,4 +160,15 @@ func (a action) String() string {
 func (l *Lock) SetSource(path string, spec []byte) {
 	l.Source = path
 	l.SourceHash = hashBytes(spec)
+}
+
+// SetReflectSource records a live reflective server as the source.
+//
+// No hash is recorded, deliberately: a server has no stable bytes to fingerprint
+// and inventing one — hashing the enumerated method list, say — would make every
+// deployment that reorders services look like drift. Drift detection is
+// therefore weaker for a reflection source, which the README says out loud.
+func (l *Lock) SetReflectSource(target string) {
+	l.Source = "reflect://" + target
+	l.SourceHash = ""
 }

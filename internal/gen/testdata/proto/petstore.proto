@@ -1,0 +1,22 @@
+syntax = "proto3";
+package pkg;
+
+import "google/protobuf/timestamp.proto";
+
+message GetPetRequest {
+  string pet_id = 1;
+  bool include_photos = 2;
+  // A well-known type on a REQUEST message, so a golden pins its protojson
+  // form: a Timestamp is an RFC 3339 string, never an object.
+  google.protobuf.Timestamp as_of = 3;
+}
+message Pet {
+  string name = 1;
+  google.protobuf.Timestamp born_at = 2;
+}
+message ListPetsRequest { int32 limit = 1; }
+
+service PetStore {
+  rpc GetPet(GetPetRequest) returns (Pet);
+  rpc ListPets(ListPetsRequest) returns (stream Pet);
+}

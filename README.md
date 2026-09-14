@@ -300,6 +300,109 @@ would change, writes nothing, and exits 1 if the committed collection has
 drifted from its spec. Files you have deliberately edited are reported but are
 not drift — keeping your edits is the promise, not a failure.
 
+## Generating a gRPC collection from proto
+
+```sh
+qv gen proto ./api/*.proto --target localhost:50051 -o ./my-api   # from files
+qv gen proto --reflect localhost:50051 --plaintext -o ./my-api    # from a live server
+```
+
+One request file per **unary** RPC, grouped by service, plus a `collection.yaml`
+carrying the target as `{{grpc_target}}`:
+
+```
+my-api/
+  collection.yaml             # defaults.grpc_target
+  .qv/gen.lock
+  pkg-petstore/
+    GetPet.yaml               # <slugified service>/<Method>.yaml
+```
+
+Descriptors come from either `.proto` files or a live server's reflection
+service — never both in one run. With files, `--target host:port` says where the
+generated requests should call, because a `.proto` describes *what* to call and
+never *where*.
+
+| Flag | Meaning |
+|---|---|
+| `-o`, `--output` | output directory (default `.`) |
+| `--reflect host:port` | enumerate from a reflective server instead of files |
+| `--target host:port` | the server generated requests call (required with files) |
+| `--plaintext` | generated requests dial without TLS |
+| `--depth` | how deep to nest message skeletons (default 4) |
+| `--force`, `--check` | as for `qv gen openapi` |
+
+### What an RPC becomes
+
+```yaml
+name: PetStore/GetPet
+protocol: grpc
+grpc:
+  target: "{{grpc_target}}"
+  method: pkg.PetStore/GetPet
+  message: |-
+    {
+      "asOf": "",
+      "includePhotos": false,
+      "petId": ""
+    }
+  proto_files:
+    - ../api/petstore.proto
+assertions:
+  - name: ok
+    from: status
+    op: eq
+    value: OK
+```
+
+**Generated messages are protojson, so field names are `lowerCamelCase` and will
+not match your `.proto` verbatim** — a proto `pet_id` is sent as `petId`. That is
+what the wire expects; the name is taken from the descriptor rather than
+transformed by hand, so protojson's own rules apply. Two related consequences
+worth knowing before you compare a generated file against its `.proto`:
+
+- A **64-bit integer is a JSON string** (`"0"`, not `0`), because a JSON number
+  cannot hold one exactly.
+- A **well-known type is its protojson form, not its struct**: a `Timestamp` is
+  an RFC 3339 string, so it is generated as `""` rather than
+  `{"seconds":0,"nanos":0}`.
+
+proto3 has no `required`, so unlike OpenAPI generation there is nothing to
+filter on: every field is emitted. `--depth` bounds how far nesting goes, and a
+**self-referential message terminates regardless of `--depth`** — the cycle
+guard is separate from the cap, so raising the cap cannot reintroduce a hang.
+
+### Streaming RPCs are skipped
+
+quiver is unary-only until Phase 7. A client-, server- or bidi-streaming RPC is
+**not generated**, and each one is named in the report:
+
+```
+generated 2 file(s)
+
+notes:
+  - pkg.PetStore/ListPets is a streaming RPC and was skipped; quiver is unary-only until Phase 7
+```
+
+A streaming-heavy service will therefore produce a smaller collection than its
+`.proto` suggests, which is a limitation rather than a failure.
+
+### `proto_files` and drift
+
+`grpc.proto_files` is resolved **relative to the request file**, so the
+generated path climbs out of the collection (`../api/petstore.proto`). When the
+output directory and the `.proto` are on different Windows volumes there is no
+relative path between them, and an absolute one is written instead; `qv run`
+honours both. A `--reflect` collection records no `proto_files` at all and
+resolves descriptors from the server at run time.
+
+`--check` works for both sources, but **drift detection is weaker for
+`--reflect`**: the lockfile records `source: reflect://host:port` and **no**
+`source_hash`, because a live server has no stable bytes to fingerprint.
+Inventing one — hashing the enumerated method list, say — would make every
+deployment that merely reordered its services look like drift. `--check` against
+a reflective target therefore compares the generated *files*, not the source.
+
 ## Ad-hoc requests
 
 No file needed:
