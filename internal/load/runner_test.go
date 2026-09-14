@@ -84,7 +84,7 @@ func newSteppingClock(step time.Duration) *steppingClock {
 }
 
 func (c *steppingClock) Now() time.Time {
-	c.ManualClock.Advance(c.step)
+	c.Advance(c.step)
 	return c.ManualClock.Now()
 }
 
