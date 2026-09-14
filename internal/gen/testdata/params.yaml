@@ -1,0 +1,47 @@
+openapi: 3.1.0
+info:
+  title: Params
+  version: "1.0"
+servers:
+  - url: https://api.example.com/v1
+paths:
+  /pets/{petId}:
+    get:
+      operationId: getPetById
+      tags: [pets]
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /pets:
+    get:
+      operationId: listPets
+      tags: [pets]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: status
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: verbose
+          in: query
+          schema:
+            type: boolean
+        - name: X-Request-Id
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok

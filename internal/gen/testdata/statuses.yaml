@@ -1,0 +1,25 @@
+openapi: 3.1.0
+info:
+  title: Statuses
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /pets:
+    post:
+      operationId: createPet
+      responses:
+        "202":
+          description: accepted
+        "201":
+          description: created
+        "400":
+          description: bad request
+  /broken:
+    get:
+      operationId: onlyErrors
+      responses:
+        "400":
+          description: bad request
+        "500":
+          description: boom

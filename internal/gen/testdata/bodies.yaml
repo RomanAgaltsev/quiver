@@ -1,0 +1,78 @@
+openapi: 3.1.0
+info:
+  title: Bodies
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [name, friend]
+      properties:
+        name:
+          type: string
+        friend:
+          $ref: "#/components/schemas/Pet"
+paths:
+  /pets:
+    post:
+      operationId: createPet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                nickname:
+                  type: string
+            example:
+              name: Fido
+              tag: dog
+      responses:
+        "201":
+          description: created
+  /pets-no-example:
+    post:
+      operationId: createPetNoExample
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, age, tags, owner]
+              properties:
+                name:
+                  type: string
+                age:
+                  type: integer
+                tags:
+                  type: array
+                  items:
+                    type: string
+                nickname:
+                  type: string
+                owner:
+                  type: object
+                  required: [id]
+                  properties:
+                    id:
+                      type: string
+      responses:
+        "201":
+          description: created
+  /pets-recursive:
+    post:
+      operationId: createPetRecursive
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pet"
+      responses:
+        "201":
+          description: created
