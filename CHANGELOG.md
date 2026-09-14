@@ -11,6 +11,121 @@ All notable changes to this project are documented here. The format follows
 
 * qv gen openapi — generate a collection from an OpenAPI spec ([#21](https://github.com/RomanAgaltsev/quiver/issues/21)) ([e70592e](https://github.com/RomanAgaltsev/quiver/commit/e70592ea8a0bfdd8daa09763db920c96d3aff18b))
 
+#### `qv gen openapi` — a spec becomes a collection you can run, and re-run
+
+```sh
+qv gen openapi ./openapi.yaml -o ./my-api
+```
+
+Adopting quiver used to mean authoring a request file per endpoint by hand. For an API of any
+size that is the entire cost of switching, paid up front, before any of quiver's advantages are
+felt. Every such API already has a machine-readable description, so now it writes the collection.
+
+One request file per operation, grouped by the operation's first tag — the grouping the spec's
+own author already chose — plus a `collection.yaml` carrying `servers[0]` as `defaults.base` and
+`securitySchemes` as auth profiles. OpenAPI **3.x only**; a Swagger 2.0 document is refused by
+name rather than half-mapped into something quietly wrong.
+
+#### Generated files are runnable, not drafts
+
+The mapping that makes the difference is that **path parameters become quiver templates**:
+
+```yaml
+name: getPetById
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/pets/{{petId}}"
+auth: bearerAuth
+assertions:
+  - name: ok
+    from: status
+    op: eq
+    value: "200"
+```
+
+`qv run ./my-api -V petId=42` works on the file as generated. Only *required* query and header
+parameters are emitted, or optional ones the spec gives an `example` or `default` for — emitting
+every optional parameter would bury the two that matter. No `timeout:` is generated, because a
+per-operation timeout invented from a spec is a guess.
+
+**Every generated request asserts something**: the lowest declared 2xx status, so a generated
+collection is a CI gate on its first run rather than a set of stubs someone has to finish. An
+operation declaring no 2xx asserts that the status is under 400 instead, and says so in the
+report.
+
+That claim is tested the only way it can honestly be made: the end-to-end test generates a
+collection from a spec describing `examples/local/server` and executes it with the real `qv run`,
+asserting the run comes back green — and a second test proves it fails when the token is wrong.
+A file that looks plausible and that no executor accepts is exactly the failure golden tests
+cannot see.
+
+#### No credential is ever written to a file
+
+`securitySchemes` become auth profiles whose every credential is an `{{env:...}}` reference —
+`{{env:BEARERAUTH_TOKEN}}`, `_USERNAME`/`_PASSWORD`, `_KEY`. There is a test asserting that no
+literal credential from a spec's own examples reaches disk, for every scheme kind. A generator
+that wrote a placeholder secret into a git-diffable file would be teaching the wrong habit at the
+first moment a user sees its output.
+
+`oauth2` and `openIdConnect` cannot be performed yet (Phase 7). They are emitted as a commented
+stub and named in the report rather than silently dropped, so a collection that cannot
+authenticate says why.
+
+#### Re-generation keeps your edits, and says what it kept
+
+The point of a generator is undermined if its output cannot be re-generated after the spec moves.
+`.qv/gen.lock` records what `qv gen` wrote and what each file looked like when it wrote it:
+
+| the lock says | the file on disk | what happens |
+|---|---|---|
+| absent | absent | written — a new operation |
+| present | unchanged since generation | rewritten from the spec |
+| present | **you edited it** | **skipped**, and reported |
+| present | you deleted it | written back, and reported |
+| absent | exists | skipped — qv did not write it |
+
+**A file you have edited is never overwritten without `--force`**, and every skip is printed. An
+operation that leaves the spec is reported as *orphaned* and left on disk: deleting a file because
+an endpoint disappeared is the user's decision, not the tool's.
+
+There is no three-way merge, deliberately. Merging YAML someone has restructured cannot be done
+correctly without a model of their intent, and a merge that is *usually* right is the worst option
+available — it corrupts quietly, in the files that are their source of truth, and git shows the
+damage only if they look. Skipping is always correct and always visible; the lockfile is what
+makes the skip precise rather than conservative.
+
+**Commit `.qv/gen.lock`.** It is the opposite case from `.qv/history/`, which is local and
+gitignored, and the shared `.qv/` prefix makes the wrong assumption the natural one. Without it, a
+re-run treats every existing file as unmanaged and touches nothing.
+
+#### `--check` for CI
+
+`qv gen openapi spec.yaml -o ./my-api --check` runs the whole generation in memory through the
+same code path as a real run, prints what would change, writes nothing, and exits **1** if the
+committed collection has drifted from its spec. Files you have deliberately edited are reported
+but are not drift — keeping them is the promise, not a failure.
+
+Exit codes stay honest: **0** generated, skips included; **2** for an unreadable spec, a 2.0
+document, or an unwritable output directory; and **1** only for `--check` drift. Generation has no
+notion of a failing assertion, and reusing 1 would blur the code that means "the API under test
+misbehaved".
+
+#### Notes for the next generator
+
+Phase 2b (proto) and 2c (GraphQL) inherit this lockfile design and these output conventions.
+Three things this release learned the hard way and they should not relearn:
+
+- **libopenapi refuses a self-referential schema at load time.** `Pet.friend: Pet` made
+  `BuildV3Model` fail outright, so the document could not be read at all. The circular-reference
+  check is skipped and the skeleton walk carries its own path, stopping at the first repeat with
+  `{}`. A depth cap alone was not enough — it produced a body nested five Pets deep.
+- **A library that logs is a library that pollutes your report.** libopenapi writes JSON log lines
+  to stderr through slog by default; it is handed a discarding logger.
+- **Read the goldens.** The first pass emitted every JSON body as an escaped single-line scalar.
+  It round-tripped perfectly and was unreadable, which fails the requirement that actually matters:
+  files a person is happy to own.
+
 ## [1.2.0](https://github.com/RomanAgaltsev/quiver/compare/v1.1.1...v1.2.0) (2026-09-14)
 
 
