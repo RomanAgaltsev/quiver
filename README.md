@@ -290,6 +290,7 @@ load:
     - {duration: 30s, rate: 200}
   duration: 30s           # at least one of duration/requests is required
   requests: 5000
+  warmup: 5s              # exclude the first 5s from the REPORT; still sent
   concurrency: 50         # max in flight; 0 uses metronome's default
   pacing: open            # open (default) | closed
   weight: 3               # folder targets only: share of the mix
@@ -417,12 +418,67 @@ Three things trigger it:
 ### Progress
 
 `--progress` prints a line per interval to **stderr**, keeping stdout
-machine-readable; `--progress-interval` sets the cadence (default 1s). It shows
-inter-tick deltas — count, errors, achieved rate — and deliberately no live
-percentiles and no live lag. Every field metronome exposes mid-run is
-cumulative, so a live percentile would be a lifetime figure presented as a
-current one, and one early stall would pin lag red for the rest of the run.
-Those arrive when metronome ships rolling-window stats.
+machine-readable; `--progress-interval` sets the cadence (default 1s).
+
+```
+    3s     198 reqs     0 err     198.0/s   p50 11ms     p99 47ms     lag 2ms
+    4s     201 reqs     1 err     201.0/s   p50 12ms     p99 52ms     lag 3ms
+```
+
+**Every figure on the line is a trailing window, not a lifetime total.** It
+covers the last ten progress intervals, so it answers "what is happening now"
+and one early stall does not pin lag red for the rest of the run. That is what
+makes a live p99 and a live lag honest — before metronome shipped rolling-window
+stats quiver printed neither, rather than pass lifetime figures off as current
+ones.
+
+The window includes traffic sent during `--warmup`. Warmup is excluded from the
+report, not from what is happening now: a progress line printing zeros while the
+connection pool warms looks like a hung run.
+
+### Warmup
+
+`--warmup 5s`, or `warmup: 5s` in the `load:` block, excludes the first five
+seconds **from the report**. The traffic is still sent and `--progress` still
+shows it; what changes is the population the percentiles, the thresholds and the
+trust verdicts are computed over.
+
+It exists because cold connection pools, TLS handshakes that will be reused and
+an unwarmed target all land in the histogram a `p99` threshold is judged
+against, and none of them is the system under test. A cold start that made the
+generator briefly late also stops failing the run as untrustworthy, because the
+lag the verdict reads is the warmed lag.
+
+The exclusion is auditable rather than a number that quietly shrank:
+
+```
+measured        4500 of 5000 requests  (5s warmup excluded)
+```
+
+`count + skipped` is the whole population, and both appear in JSON as `count`
+and `skipped`. A warmup at or over the run's `duration` is rejected at config
+time — it would exclude everything.
+
+### Per-request breakdown
+
+A folder target drives several requests through one `Mix`, and one p99 over all
+of them describes none of them. When the target is a folder, the report adds:
+
+```
+per request         reqs      err      p50      p99
+  list                 75        0      9ms     20ms
+  search               25        0    180ms    400ms
+```
+
+and a `by_request` array in JSON carrying the same fields plus `clamped` and
+`corrected_clamped` **per series**. Per-series clamp state matters more than the
+total's: one slow endpoint clamping its own histogram while the total is fine is
+the likelier shape, and a clamped percentile understates reality.
+
+A single-target run prints no such section — its one row would repeat the total
+— and does not build the aggregate at all. Every recorder runs on the goroutine
+draining the result channel, so an aggregate nothing reads is latency added to
+the generator.
 
 ### Dependency pin
 

@@ -4,6 +4,110 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!-- Release note for whoever cuts v1.2.0: release-please inserts the generated
+     "## [1.2.0]" heading and its Features bullets immediately BEFORE the first
+     existing version heading — i.e. at the BOTTOM of this prose, directly above
+     "## [1.1.1]". Move those generated lines to the top of this section before
+     merging the release PR, and delete this comment. Read the generated
+     artifact; do not predict where it lands. -->
+
+#### Adopting metronome v0.9.0 — live percentiles, a per-request breakdown, and `--warmup`
+
+The pin moves from **v0.4.0 to v0.9.0**, five releases, two of which exist because
+quiver asked for them. Nothing quiver compiled against changed meaning; what the bump
+buys is three things v1.1.0 deferred with a reason, each of which is now shipped.
+
+#### `--progress` prints live percentiles, because it finally can
+
+The progress line used to print count, errors and a rate quiver derived itself, and
+**deliberately no percentiles and no lag**: every field metronome exposed mid-run was
+cumulative, so a live p99 would have been a lifetime figure presented as a current one
+and one early stall would have pinned lag red for the rest of the run. quiver declined
+to print a number it could not stand behind.
+
+```
+    3s     198 reqs     0 err     198.0/s   p50 11ms     p99 47ms     lag 2ms
+```
+
+Every figure is now a trailing window over the last ten intervals, read from a
+`RollingStats` fanned alongside the reported aggregate on the same histogram range —
+a different range would make `Window().P99` and `Snapshot().P99` disagree for no
+visible reason. The refusal is gone because the reason for it is.
+
+#### A folder target reports per request
+
+A folder drives several requests through one `Mix`, and one p99 over all of them
+describes none of them. quiver has stamped `Labels{"request": name}` on every Result
+since v1.1.0 and nothing could read it back until metronome v0.6.
+
+```
+per request         reqs      err      p50      p99
+  list                 75        0      9ms     20ms
+  search               25        0    180ms    400ms
+```
+
+JSON gains a `by_request` array with the same fields plus `clamped` and
+`corrected_clamped` **per series** — one slow endpoint clamping its own histogram
+while the total is fine is the likelier shape.
+
+A single-target run prints no such section and **does not build the aggregate at
+all**. Every recorder runs on the goroutine draining the result channel, so an
+aggregate nothing reads is latency added to the generator; this was found the hard
+way, as a flaky test that only failed under load.
+
+#### `--warmup` excludes a cold start from the report, not from the load
+
+Cold connection pools, TLS handshakes that will be reused and an unwarmed target all
+land in the histogram a `p99` threshold is judged against, and none of them is the
+system under test. `--warmup 5s`, or `warmup: 5s` in the `load:` block, keeps that
+prefix out of the report while still sending it — and `--progress` still shows it,
+because a progress line printing zeros while the pool warms looks like a hung run.
+
+```
+measured        4500 of 5000 requests  (5s warmup excluded)
+```
+
+`count + skipped` is the whole population, in the text report and in JSON. An
+exclusion that cannot be audited is a number that quietly shrank. A warmup at or over
+the run's `duration` is rejected at config time.
+
+**The trust verdict now reads the warmed population too**, which needed no new code:
+the verdict reads the snapshot it is handed, and the warmup changed which population
+that snapshot describes. A cold start that made the generator briefly late no longer
+fails a run as untrustworthy.
+
+#### Fixed: a weight-only `load:` block was rejected
+
+A folder member declaring only `weight` — the documented form, explicitly permitted by
+the rule that rejects a later file declaring anything *else* — failed validation with
+"set exactly one of rate, ramp, or phases". **A two-request load folder could not be
+written at all.** Found by running the new example rather than by reading the code,
+which is the same lesson amendment A7 recorded: an example nothing runs is an example
+that has already broken.
+
+#### Fixed: the clamp marker flagged healthy runs
+
+The new per-series clamp marker fired on *any* clamping, including the low-side clamp
+that rounds a sub-microsecond latency up to the histogram floor. That cannot hide a
+slow request, and a handful of them is normal on a localhost run — so a healthy run
+was marked "percentiles understate". It now discriminates on `Max > statsHigh`, the
+same rule the trust verdict already used, and the CI example asserts a green run
+carries no marker.
+
+#### Also
+
+- A two-request hermetic example, `examples/local/load-folder/`, exercising the
+  breakdown, weights and warmup. CI runs it and asserts all three, the way
+  amendment A7 established.
+- `golang.org/x/time` to v0.16.0, required by metronome v0.9.0 rather than chosen here.
+- **The `go` directive moves to `1.27`**, and the minor-only form is deliberate. Every
+  workflow resolves its toolchain from `go-version-file: go.mod`, and `actions/setup-go`
+  treats a bare minor as "the latest patch of that line" but an explicit patch as an exact
+  pin. `go get` had canonicalised the directive to `1.26.0`, which pinned CI to the initial
+  go1.26 release and lit up **23 standard-library advisories** in `govulncheck`, every one
+  of them already fixed in go1.26.1. Writing `1.27.1` here would have bought the same trap
+  back the day a fix lands in 1.27.2. **quiver now needs Go 1.27 or newer to build.**
+
 ## [1.1.1](https://github.com/RomanAgaltsev/quiver/compare/v1.1.0...v1.1.1) (2026-09-03)
 
 

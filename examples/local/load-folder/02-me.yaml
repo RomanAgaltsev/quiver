@@ -1,0 +1,17 @@
+# Only `weight` here: a folder target takes its run shape from the first file,
+# and quiver refuses a later file that declares anything else rather than
+# ignoring it silently.
+name: me under load
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/me"
+  headers:
+    Authorization: "Bearer {{token}}"
+assertions:
+  - name: ok
+    from: status
+    op: eq
+    value: "200"
+load:
+  weight: 1

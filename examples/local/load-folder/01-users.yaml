@@ -1,0 +1,26 @@
+# A folder target drives every request in the folder through one weighted mix.
+# The run shape comes from the FIRST file's load: block; later files may set
+# only `weight`. This one also declares `warmup`, so the report excludes the
+# cold start while --progress still shows it.
+name: users under load
+protocol: http
+http:
+  method: GET
+  url: "{{base}}/users"
+  headers:
+    Authorization: "Bearer {{token}}"
+assertions:
+  - name: ok
+    from: status
+    op: eq
+    value: "200"
+load:
+  rate: 200
+  duration: 3s
+  warmup: 1s
+  concurrency: 20
+  pacing: open
+  weight: 3
+  thresholds:
+    p99: 100ms
+    error_rate: 0.01

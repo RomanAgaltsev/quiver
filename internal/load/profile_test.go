@@ -125,3 +125,43 @@ func TestLagBudgetUsesPeakRateForRamp(t *testing.T) {
 		Ramp: &request.RampSpec{Start: 10, End: 1000}, Duration: secs(10 * time.Second)}, Overrides{})
 	require.Equal(t, 25*time.Millisecond, p.LagBudget()) // 5 x 1ms floored
 }
+
+// --- Task 4: --warmup --------------------------------------------------------
+
+func TestResolveProfileWarmupFlagOverridesFile(t *testing.T) {
+	spec := &request.LoadSpec{
+		Rate:     10,
+		Duration: request.NewDuration(30 * time.Second),
+		Warmup:   request.NewDuration(2 * time.Second),
+	}
+	p, err := ResolveProfile(spec, Overrides{Warmup: 5 * time.Second})
+	require.NoError(t, err)
+	require.Equal(t, 5*time.Second, p.Warmup, "the flag must override the file")
+}
+
+func TestResolveProfileWarmupFromFile(t *testing.T) {
+	spec := &request.LoadSpec{
+		Rate:     10,
+		Duration: request.NewDuration(30 * time.Second),
+		Warmup:   request.NewDuration(2 * time.Second),
+	}
+	p, err := ResolveProfile(spec, Overrides{})
+	require.NoError(t, err)
+	require.Equal(t, 2*time.Second, p.Warmup)
+}
+
+func TestResolveProfileWarmupMustBeUnderDuration(t *testing.T) {
+	spec := &request.LoadSpec{Rate: 10, Duration: request.NewDuration(5 * time.Second)}
+	_, err := ResolveProfile(spec, Overrides{Warmup: 10 * time.Second})
+	require.Error(t, err, "a warmup longer than the run was accepted; it measures nothing")
+	require.Contains(t, err.Error(), "warmup")
+}
+
+// A requests-bounded run has no duration to compare a warmup against, so the
+// rule must not fire there rather than rejecting a legal configuration.
+func TestResolveProfileWarmupAllowedWithoutDuration(t *testing.T) {
+	spec := &request.LoadSpec{Rate: 10, Requests: 500}
+	p, err := ResolveProfile(spec, Overrides{Warmup: 2 * time.Second})
+	require.NoError(t, err)
+	require.Equal(t, 2*time.Second, p.Warmup)
+}

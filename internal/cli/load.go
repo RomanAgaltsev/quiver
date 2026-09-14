@@ -22,6 +22,7 @@ func newLoadCmd() *cobra.Command {
 		concurrency      int
 		pacing           string
 		duration         time.Duration
+		warmup           time.Duration
 		allowLag         bool
 		progress         bool
 		progressInterval time.Duration
@@ -56,6 +57,7 @@ func newLoadCmd() *cobra.Command {
 			ov := load.Overrides{
 				Rate: rate, Duration: duration, Requests: requests,
 				Concurrency: concurrency, Pacing: pacing, AllowLag: allowLag,
+				Warmup: warmup,
 			}
 			if ramp != "" {
 				start, end, rErr := parseRamp(ramp)
@@ -145,6 +147,8 @@ func newLoadCmd() *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "concurrency", 0, "maximum requests in flight")
 	cmd.Flags().StringVar(&pacing, "pacing", "", "open (default) or closed")
 	cmd.Flags().DurationVar(&duration, "duration", 0, "how long to run, e.g. 30s")
+	cmd.Flags().DurationVar(&warmup, "warmup", 0,
+		"exclude the first N of the run from the report, e.g. 5s (the traffic is still sent)")
 	cmd.Flags().BoolVar(&allowLag, "allow-lag", false, "downgrade a generator-lag failure to a warning")
 	cmd.Flags().BoolVar(&progress, "progress", false, "print progress to stderr while running")
 	cmd.Flags().DurationVar(&progressInterval, "progress-interval", time.Second, "progress tick interval")

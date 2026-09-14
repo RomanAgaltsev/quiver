@@ -124,16 +124,19 @@ func Execute(ctx context.Context, opts Options) (Run, error) {
 		return Run{}, err
 	}
 
-	snap, err := drive(ctx, opts, runnerImpl)
+	snap, byReq, skipped, err := drive(ctx, opts, runnerImpl)
 	if err != nil {
 		return Run{}, err
 	}
 
 	return Run{
-		Target:   target,
-		Profile:  opts.Profile,
-		Snapshot: snap,
-		Eval:     Evaluate(snap, opts.Profile),
+		Target:    target,
+		Profile:   opts.Profile,
+		Snapshot:  snap,
+		Eval:      Evaluate(snap, opts.Profile),
+		ByRequest: byReq,
+		Warmup:    opts.Profile.Warmup,
+		Skipped:   skipped,
 	}, nil
 }
 
@@ -214,7 +217,7 @@ func describeTarget(r *request.Request, rr *core.ResolvedRequest) string {
 // The result channel is drained to completion on every path. metronome's
 // contract is explicit: abandoning a live channel leaves its workers blocked on
 // the send and leaks them for the lifetime of the process.
-func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Snapshot, error) {
+func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Snapshot, []requestStats, int64, error) {
 	p := opts.Profile
 
 	if p.Duration > 0 {
@@ -232,33 +235,111 @@ func drive(ctx context.Context, opts Options, r metronome.Runner) (metronome.Sna
 		Clock:       opts.Clock, // nil is fine: the Driver falls back to SystemClock
 	}
 
-	stats := metronome.NewStatsRange(statsLow, statsHigh, statsSigfigs)
+	total := metronome.NewStatsRange(statsLow, statsHigh, statsSigfigs)
+
+	// Keyed on the label runner.go stamps on every Result. The series count is
+	// the number of request files in the target folder — small and known — so
+	// Labeled's MaxSeries cap is left at its default rather than configured.
+	//
+	// Built only for a folder target. A single-target run has nothing to break
+	// down — the report omits a one-row section because it repeats the total —
+	// so recording one would be pure cost on the hot path. And it is not free:
+	// every recorder in the tree runs synchronously on the goroutine draining
+	// the result channel, so time spent here is time not spent receiving. A
+	// second aggregate per Result measurably raises schedule lag on a loaded
+	// machine, which is the generator-side failure exit 3 exists to report.
+	var byReq *metronome.LabeledStats[*metronome.Stats]
+	if len(opts.Targets) > 1 {
+		byReq = metronome.NewLabeledStats(metronome.Labeled[*metronome.Stats]{
+			Key: "request",
+			New: func() *metronome.Stats {
+				return metronome.NewStatsRange(statsLow, statsHigh, statsSigfigs)
+			},
+		})
+	}
+
+	// The reported recorders go inside the skipper; the live one stays outside.
+	// After anchors on the first Result's Scheduled stamp rather than on a
+	// clock, so this stays deterministic under a ManualClock. The handle is kept
+	// for Skipped(): Count + Skipped is the whole population.
+	measured := recorderTree(total, byReq)
+
+	// reported is a metronome.Recorder: recorderTree returns one, and warm
+	// replaces it below when a warmup is set.
+	reported := measured
+	var warm *metronome.Skipper
+	if p.Warmup > 0 {
+		warm = metronome.After(p.Warmup, measured)
+		reported = warm
+	}
+
 	results := d.Run(ctx)
 
 	if opts.Progress == nil {
-		for res := range results {
-			stats.Record(res)
-		}
-		return stats.Snapshot(), nil
+		metronome.Drain(results, reported)
+		return total.Snapshot(), breakdown(byReq), skippedBy(warm), nil
 	}
 
 	interval := opts.ProgressInterval
 	if interval <= 0 {
 		interval = time.Second
 	}
+
+	// One bucket per progress tick, so the trailing view and the thing printing
+	// it agree by construction. The range must match total's: a rolling window
+	// on a different range would make Window().P99 and Snapshot().P99 disagree
+	// for no visible reason, and would reintroduce the low-side clamping that
+	// amendment A2 fixed.
+	live := metronome.NewRollingStats(metronome.Rolling{
+		Lo:      statsLow,
+		Hi:      statsHigh,
+		Sigfigs: statsSigfigs,
+		Window:  10 * interval,
+		Clock:   opts.Clock,
+	})
+
+	// live sits OUTSIDE the warmup: the report excludes warmup, the live view
+	// does not. A progress line printing zeros while the pool warms looks like a
+	// hung run.
+	sink := metronome.Multi(reported, live)
+
 	pw := newProgressWriter(opts.Progress, interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Drain appears only on the path above. It blocks until the channel closes,
+	// so a ticker cannot interleave with it; the shared recorder tree is what
+	// makes the ticker and the report read one stream, not Drain itself. Do not
+	// restructure this into a goroutine to force Drain in -- drive's contract is
+	// that it owns none.
 	for {
 		select {
 		case res, ok := <-results:
 			if !ok {
-				return stats.Snapshot(), nil
+				return total.Snapshot(), breakdown(byReq), skippedBy(warm), nil
 			}
-			stats.Record(res)
+			sink.Record(res)
 		case <-ticker.C:
-			pw.tick(stats.Snapshot())
+			pw.tick(live.Window())
 		}
 	}
+}
+
+// skippedBy reports how many Results a warmup kept out of the measurement. A
+// nil skipper means no warmup was set, which is zero rather than unknown.
+func skippedBy(s *metronome.Skipper) int64 {
+	if s == nil {
+		return 0
+	}
+	return s.Skipped()
+}
+
+// recorderTree fans a Result to the reported aggregates. byReq is nil for a
+// single-target run, where Multi of one is a needless indirection on the drain
+// path.
+func recorderTree(total *metronome.Stats, byReq *metronome.LabeledStats[*metronome.Stats]) metronome.Recorder {
+	if byReq == nil {
+		return total
+	}
+	return metronome.Multi(total, byReq)
 }

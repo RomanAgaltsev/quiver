@@ -284,3 +284,108 @@ func TestValidateTargetsAllowsAFullBlockOnTheFirstTarget(t *testing.T) {
 	}
 	require.NoError(t, ValidateTargets(targets))
 }
+
+// A single-target run is not broken down, so it must not pay for a breakdown.
+// Every recorder in the tree runs synchronously on the goroutine draining the
+// result channel, so a second aggregate per Result is time not spent receiving
+// — and on a loaded machine that raises schedule lag enough to trip the exit-3
+// trust verdict. The report omits a one-row section anyway.
+func TestSingleTargetRunIsNotBrokenDown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	target := &request.Request{Name: "ping", Protocol: request.ProtocolHTTP, Path: "ping.yaml",
+		HTTP: &request.HTTPSpec{Method: "GET", URL: srv.URL}}
+	p, err := ResolveProfile(&request.LoadSpec{Rate: 500, Requests: 20}, Overrides{})
+	require.NoError(t, err)
+
+	run, err := Execute(context.Background(), Options{
+		Registry: reg(), Targets: []*request.Request{target},
+		Resolved: resolved(), Profile: p,
+	})
+	require.NoError(t, err)
+	require.Empty(t, run.ByRequest, "a single-target run built a per-request breakdown")
+}
+
+// A folder target is what the breakdown exists for: one p99 over two endpoints
+// describes neither.
+func TestFolderTargetIsBrokenDownPerRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	mk := func(name string) *request.Request {
+		return &request.Request{Name: name, Protocol: request.ProtocolHTTP, Path: name + ".yaml",
+			HTTP: &request.HTTPSpec{Method: "GET", URL: srv.URL + "/" + name}}
+	}
+	p, err := ResolveProfile(&request.LoadSpec{Rate: 500, Requests: 40}, Overrides{})
+	require.NoError(t, err)
+
+	run, err := Execute(context.Background(), Options{
+		Registry: reg(), Targets: []*request.Request{mk("alpha"), mk("beta")},
+		Resolved: resolved(), Profile: p,
+	})
+	require.NoError(t, err)
+	require.Len(t, run.ByRequest, 2, "a folder target was not broken down")
+	require.Equal(t, "alpha", run.ByRequest[0].Name)
+	require.Equal(t, "beta", run.ByRequest[1].Name)
+
+	var sum int64
+	for _, s := range run.ByRequest {
+		sum += s.Snap.Count
+	}
+	require.Equal(t, run.Snapshot.Count, sum,
+		"series counts must sum to the total; a Result went unattributed")
+}
+
+// --warmup keeps the cold start out of the REPORT without keeping it out of the
+// load: Count + Skipped is the whole population, and the traffic is still sent.
+func TestWarmupExcludesAPrefixAndStaysAuditable(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	target := &request.Request{Name: "ping", Protocol: request.ProtocolHTTP, Path: "ping.yaml",
+		HTTP: &request.HTTPSpec{Method: "GET", URL: srv.URL}}
+	// Reconciling the server's hit count against Count + Skipped needs a run
+	// where every Result reached the server, and two things otherwise break
+	// that. An open-loop unit that finds no free worker is delivered as a
+	// saturated Result without being sent, and a DURATION-bounded run cancels
+	// whatever is in flight at the deadline, which delivers a Result the server
+	// may never have counted. So: closed loop, which cannot saturate, and
+	// bounded by requests rather than by time, so nothing is cancelled.
+	//
+	// 60 requests at 200/s is about 300ms of wall clock, so a 100ms warmup
+	// excludes roughly the first 20 however slow the machine is — the rate
+	// limiter sets the span, not the host.
+	const total = 60
+	p, err := ResolveProfile(
+		&request.LoadSpec{Rate: 200, Requests: total},
+		Overrides{Warmup: 100 * time.Millisecond, Pacing: "closed"})
+	require.NoError(t, err)
+
+	run, err := Execute(context.Background(), Options{
+		Registry: reg(), Targets: []*request.Request{target},
+		Resolved: resolved(), Profile: p,
+	})
+	require.NoError(t, err)
+
+	require.Positive(t, run.Skipped, "the warmup excluded nothing")
+	require.Positive(t, run.Snapshot.Count, "the warmup excluded the whole run")
+	require.Zero(t, run.Snapshot.Saturated, "closed loop must not saturate")
+
+	// The exclusion is auditable: Count + Skipped is the whole population, and
+	// it equals what the target actually served — so the warmup took traffic
+	// out of the REPORT without taking it off the wire.
+	require.Equal(t, int64(total), run.Snapshot.Count+run.Skipped,
+		"Count + Skipped must be the whole population")
+	require.Equal(t, int64(total), hits.Load(),
+		"warmup traffic must still be sent, not just excluded from the report")
+	require.Equal(t, 100*time.Millisecond, run.Warmup)
+}

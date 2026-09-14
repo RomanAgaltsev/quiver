@@ -368,3 +368,56 @@ func TestMinRPSUnaffectedWithoutSaturation(t *testing.T) {
 	e := Evaluate(snap, profileWith(request.Thresholds{MinRPS: f64(98)}))
 	require.Equal(t, 0, e.ExitCode)
 }
+
+// A cold start that made the generator briefly late is not evidence that the
+// measurement is untrustworthy. With --warmup set, the population the verdict
+// reads is already the warmed one, because drive() wraps the reported
+// recorders in the skipper — so the lag it sees is the warmed lag rather than
+// the run's lifetime maximum.
+//
+// This needs no code in thresholds.go: the verdict reads the snapshot it is
+// handed, and Task 4 changed which population that snapshot describes. The test
+// exists to pin that, so a later refactor that reached around the snapshot for a
+// lifetime figure would fail here rather than silently fail runs.
+func TestTrustVerdictReadsTheWarmedPopulation(t *testing.T) {
+	p := &Profile{
+		Rate: 500, Duration: 10 * time.Second, Pacing: metronome.OpenLoop,
+		Thresholds: request.Thresholds{P99: secs(250 * time.Millisecond)},
+	}
+
+	// 500/s → a 2ms interval → a 25ms floor on the lag budget.
+	require.Equal(t, 25*time.Millisecond, p.LagBudget())
+
+	cold := metronome.Snapshot{Count: 1000, P99: 10 * time.Millisecond,
+		MaxScheduleLag: 900 * time.Millisecond}
+	warm := metronome.Snapshot{Count: 800, P99: 10 * time.Millisecond,
+		MaxScheduleLag: 2 * time.Millisecond}
+
+	require.True(t, anyFailed(trustVerdicts(cold, p)),
+		"a 900ms lag against a 25ms budget should fail the trust verdict")
+	require.False(t, anyFailed(trustVerdicts(warm, p)),
+		"a 2ms warmed lag should pass; the cold start is excluded")
+
+	require.Equal(t, 3, Evaluate(cold, p).ExitCode)
+	require.Equal(t, 0, Evaluate(warm, p).ExitCode)
+}
+
+// The clamp guards compare against statsHigh and are unaffected by warmup: a
+// clamped histogram understates its percentiles whichever population it holds.
+//
+// Per-SERIES clamping is reported (Task 3) but deliberately does NOT fail the
+// run. Making it fail is a product decision about what exit 3 means, not a
+// consequence of this plan, and it is recorded as a follow-up rather than
+// decided here.
+func TestClampGuardsAreUnaffectedByWarmup(t *testing.T) {
+	p := &Profile{Rate: 10, Duration: time.Second, Pacing: metronome.OpenLoop,
+		Thresholds: request.Thresholds{P99: secs(250 * time.Millisecond)}}
+
+	clamped := metronome.Snapshot{Count: 100, Clamped: 7, Max: statsHigh + time.Second,
+		P99: statsHigh}
+	require.True(t, anyFailed(trustVerdicts(clamped, p)),
+		"a histogram clamped at the top must fail: its percentiles understate reality")
+
+	clean := metronome.Snapshot{Count: 100, P99: 10 * time.Millisecond}
+	require.False(t, anyFailed(trustVerdicts(clean, p)))
+}
