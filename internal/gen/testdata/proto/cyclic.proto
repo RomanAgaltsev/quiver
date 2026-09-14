@@ -1,0 +1,9 @@
+syntax = "proto3";
+package pkg;
+
+message Node {
+  string id = 1;
+  Node next = 2;
+}
+
+service Cyclic { rpc Walk(Node) returns (Node); }
