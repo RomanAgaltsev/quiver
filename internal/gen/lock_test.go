@@ -223,7 +223,7 @@ func TestGeneratedFilesParseBackAsRequests(t *testing.T) {
 
 // A generated request file must not carry a `timeout:` key at all. An empty one
 // would be both a lie (the generator did not choose a timeout) and, depending on
-// how it marshals, unparseable.
+// how it marshals, unparsable.
 func TestGeneratedRequestHasNoTimeoutKey(t *testing.T) {
 	data, err := marshalRequest(sampleRequest())
 	require.NoError(t, err)
